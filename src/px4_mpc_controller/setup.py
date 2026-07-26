@@ -24,6 +24,7 @@ setup(
             'offboard_demo_node = px4_mpc_controller.offboard_demo_node:main',
             'mpc_node = px4_mpc_controller.mpc_node:main',
             'trajectory_generator = px4_mpc_controller.trajectory_generator:main',
+            'vehicle_pose_publisher = px4_mpc_controller.vehicle_pose_publisher:main',
         ],
     },
 )

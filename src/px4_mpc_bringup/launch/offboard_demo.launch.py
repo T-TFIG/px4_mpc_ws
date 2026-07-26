@@ -1,6 +1,31 @@
-"""Stage 2: sitl_agent.launch.py + the minimal fixed-setpoint offboard demo node. Not yet implemented."""
+"""Stage 2: sitl_agent.launch.py + the minimal fixed-setpoint offboard demo node.
+
+Run PX4 SITL separately first (`make px4_sitl gz_x500` from /PX4-Autopilot,
+in its own terminal), then run this.
+"""
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    return LaunchDescription([])
+    sitl_agent_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('px4_mpc_bringup'),
+                'launch', 'sitl_agent.launch.py')
+        )
+    )
+
+    offboard_demo_node = Node(
+        package='px4_mpc_controller',
+        executable='offboard_demo_node',
+        name='offboard_demo_node',
+        output='screen',
+    )
+
+    return LaunchDescription([sitl_agent_launch, offboard_demo_node])

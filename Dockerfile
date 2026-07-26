@@ -29,6 +29,12 @@ WORKDIR /PX4-Autopilot
 RUN bash ./Tools/setup/ubuntu.sh --no-nuttx
 RUN make px4_sitl_default
 
+# Dev-only SITL param overrides (no GCS/RC, disable the flaky simulated battery --
+# see sitl/4001_gz_x500.post for why), auto-sourced by PX4's rcS at every boot of
+# the gz_x500 airframe (SYS_AUTOSTART=4001).
+COPY sitl/4001_gz_x500.post \
+    /PX4-Autopilot/build/px4_sitl_default/etc/init.d-posix/airframes/4001_gz_x500.post
+
 # --- Micro XRCE-DDS Agent: bridges PX4 uORB topics to ROS2 DDS ---
 RUN git clone -b v2.4.3 --depth 1 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /Micro-XRCE-DDS-Agent \
     && cd /Micro-XRCE-DDS-Agent \

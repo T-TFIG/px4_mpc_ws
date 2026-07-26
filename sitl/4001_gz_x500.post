@@ -1,0 +1,9 @@
+# SITL dev-only overrides, auto-sourced by PX4's rcS after airframe 4001 (gz_x500) boots.
+#
+# These disable safety checks that only make sense when a human (GCS/RC) is expected
+# to be in the loop -- our own companion-computer node is deliberately in full control
+# instead. NOT appropriate for real hardware; a real deployment would want these back on
+# with an actual safety pilot/GCS available.
+param set NAV_DLL_ACT 0      # don't require a GCS/RC datalink to arm
+param set SIM_BAT_ENABLE 0   # disable the flaky simulated battery model entirely
+param set COM_LOW_BAT_ACT 0  # (belt-and-suspenders) disable the low-battery failsafe action
