@@ -488,7 +488,11 @@ implementations formulate the optimization directly in terms of $f_i$.
 With $\dot x=f(x,u)$ and $u=[f_1,f_2,f_3,f_4]$ established, the nonlinear MPC
 problem (using the standard "direct multiple shooting" formulation) is:
 
-$$\min_{x_{0:N},\,u_{0:N-1}} \sum_{k=0}^{N-1}\Big[(x_k-x_k^{ref})^TQ(x_k-x_k^{ref}) + (u_k-u_{hover})^TR\,u_k\Big] + (x_N-x_N^{ref})^TQ_f(x_N-x_N^{ref})$$
+$$\min_{x_{0:N},\,u_{0:N-1}} \sum_{k=0}^{N-1}\Big[(x_k-x_k^{ref})^TQ(x_k-x_k^{ref}) + (u_k-u_{hover})^TR\,(u_k-u_{hover})\Big] + (x_N-x_N^{ref})^TQ_f(x_N-x_N^{ref})$$
+
+(the control term is measured *about hover*, not about zero -- see
+`MPC_solver.md` Part 4.3 for why that distinction is essential and what
+$u_{hover}$ works out to.)
 
 subject to:
 
