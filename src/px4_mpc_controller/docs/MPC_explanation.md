@@ -1,133 +1,188 @@
-# Quadrotor Dynamics via Euler-Lagrange (and why our MPC doesn't use them)
+# From a Point Mass to a Real Quadrotor: Deriving the Dynamics Behind Our MPC
 
-This derives the *full* 6-DOF rigid-body quadrotor dynamics from first principles.
-It is **not** what `mpc_solver.py` actually implements -- see the final section for
-why, and what we use instead.
+## Why this document exists
 
-The goal is to arrive at $\dot x = f(x, u)$ starting from the Lagrangian
-$L(q, \dot q) = T - V$, where $T$ is kinetic energy, $V$ is potential energy, and
-$q$ is the vector of generalized coordinates.
+Right now, `mpc_solver.py` controls the drone by pretending it's a point
+mass -- a dot with position and velocity, pushed around by an acceleration
+we get to choose freely. That's a real simplification: a real quadrotor
+can't just accelerate sideways, it has to *tilt* first, and tilting takes
+time and is itself governed by physics we haven't modeled at all yet.
 
-*Note on frames:* this section uses the conventional Z-up world frame most
-dynamics textbooks use (so $V = mgz$ below is positive altitude). Our actual
-implementation uses PX4's NED convention instead (Z-down) -- see the last
-section for how that reconciles.
+This document builds the *real* model, one honest step at a time, so that
+the next version of our MPC can reason about the actual vehicle instead of
+an idealized dot. Nothing here is dropped in as a finished formula -- every
+equation is derived from the one before it, with an explanation of *why*
+that step happens, so you can always trace an equation back to where it came
+from instead of having to take it on faith.
 
-## 1. Generalized coordinates
+### Roadmap -- where we're going, in one paragraph
 
-For a quadrotor, $q = [\xi^T, \eta^T]^T$, where:
+We'll describe the drone with six numbers: three for position, three for
+orientation. We'll write down its kinetic and potential energy in terms of
+those six numbers and their rates of change, because there's a systematic
+recipe (Euler-Lagrange) that turns "energy as a function of coordinates"
+directly into "equations of motion" -- no need to draw every force by hand.
+Applying that recipe will split cleanly into two halves: a straightforward
+one for position, and a genuinely messy one for orientation, because the
+drone's orientation-related "effective mass" changes as it tilts. We'll
+derive that messiness properly (it's called the Coriolis term), and *then*
+make a deliberate, justified decision to drop it for our actual controller,
+because for the way our drone actually flies, it turns out to be small
+enough not to matter. Finally we'll connect the physical torques a real
+quadrotor produces to what its four motors actually do, and assemble
+everything into the nonlinear optimization problem an MPC needs to solve.
 
-- **Position** (world frame): $\xi = [x, y, z]^T$
-- **Orientation** (Euler angles): $\eta = [\phi, \theta, \psi]^T$ (roll, pitch, yaw)
+If at any point you feel lost, jump back to this paragraph -- it's the map.
 
-So $q = [x, y, z, \phi, \theta, \psi]^T$ -- six generalized coordinates.
+---
 
-## 2. The Euler-Lagrange equation
+## Part 1: Describing the drone with numbers
 
-$$\frac{d}{dt}\left(\frac{\partial L}{\partial \dot q}\right) - \frac{\partial L}{\partial q} = Q$$
+### 1.1 What are we even trying to describe?
 
-where $Q$ is the generalized force -- what the four motors actually produce (a
-thrust and three torques), mapped into the $q$ coordinates.
+A quadrotor's *state* -- everything you'd need to know to say exactly what
+it's doing at one instant -- is two things:
 
-## 3. Kinetic energy
+1. **Where its center of mass is**, in the world: three numbers, $x,y,z$.
+2. **Which way it's pointing**: three more numbers, some parameterization of
+   orientation.
 
-$T = T_t + T_r$ (translational + rotational).
+For orientation, we'll use the most common choice for aircraft: **Euler
+angles** roll ($\phi$), pitch ($\theta$), and yaw ($\psi$) -- the same three
+angles you'd use to describe "tilted this much sideways, tilted this much
+forward/back, pointed this compass direction." (We'll see later that this
+choice has a real downside -- gimbal lock -- but it's the natural one to
+start with, and it's what lets us use the energy-based method below cleanly.)
 
-### 3.1 Translational
+Put together, that's six numbers describing the drone completely (ignoring,
+for now, how fast anything is changing):
 
-$$T_t = \frac{1}{2} m \dot\xi^T \dot\xi = \frac{1}{2} m(\dot x^2 + \dot y^2 + \dot z^2)$$
+$$q = \begin{bmatrix}\xi\\\eta\end{bmatrix}, \qquad
+\xi = \begin{bmatrix}x\\y\\z\end{bmatrix} \text{ (position)}, \qquad
+\eta = \begin{bmatrix}\phi\\\theta\\\psi\end{bmatrix} \text{ (orientation)}$$
 
-### 3.2 Rotational
+In the language of classical mechanics, $q$ is called the vector of
+**generalized coordinates** -- "generalized" just meaning "whatever set of
+numbers we've chosen to describe the configuration," as opposed to some
+specific physical meaning like Cartesian position alone.
 
-$$T_r = \frac{1}{2}\,\omega^T J \omega, \qquad J = \mathrm{diag}(J_x, J_y, J_z)$$
+### 1.2 Why bother with energy instead of just F = ma?
 
-**The key subtlety** (the part most people get wrong first try): the Euler angle
-rate $\dot\eta$ is **not** the body angular velocity $\omega = [p, q, r]^T$.
-$p, q, r$ live in the body frame; $\dot\phi, \dot\theta, \dot\psi$ live in
-Euler-angle space -- different coordinate systems entirely. The correct
-relation needs a transformation matrix:
+You *could* derive the drone's equations of motion by drawing every force
+and torque by hand and applying Newton's laws directly. For a single rigid
+body that's very doable. The reason we won't do that here is that this
+system has an awkward complication baked in: our orientation coordinates
+($\phi,\theta,\psi$) are not the same thing as the angular velocity a
+gyroscope on the drone would actually measure (we'll make this precise in a
+moment) -- and once that distinction exists, force-diagram bookkeeping gets
+error-prone fast.
+
+**Lagrangian mechanics** sidesteps this. Instead of forces, you write down
+one scalar number -- kinetic energy minus potential energy, called the
+Lagrangian $L$ -- purely as a function of your coordinates $q$ and their
+rates $\dot q$:
+
+$$L(q,\dot q) = T(q,\dot q) - V(q)$$
+
+Then a fixed, mechanical recipe (the **Euler-Lagrange equation**, introduced
+properly in Part 3) turns $L$ directly into the equations of motion. All we
+have to get right is the energy -- the recipe handles everything else,
+including all the messy coupling terms we'd otherwise have to spot by eye in
+a force diagram. That's the whole reason for the detour through energy: it's
+mechanical and hard to get wrong, rather than clever and easy to get wrong.
+
+So our job for the rest of Part 1 and Part 2 is just: **write down $T$ and
+$V$ correctly.** The recipe in Part 3 does the rest.
+
+---
+
+## Part 2: Kinetic and potential energy
+
+### 2.1 Splitting kinetic energy in two
+
+The drone's kinetic energy has two independent contributions: energy from
+moving through space (translational), and energy from spinning (rotational).
+They add:
+
+$$T = T_t + T_r$$
+
+### 2.2 Translational kinetic energy -- the easy half
+
+This one is exactly the familiar $\frac12 mv^2$ from introductory physics,
+just written for a 3D velocity vector $\dot\xi = [\dot x,\dot y,\dot z]^T$:
+
+$$T_t = \frac{1}{2} m\,\dot\xi^T\dot\xi = \frac{1}{2}m(\dot x^2+\dot y^2+\dot z^2)$$
+
+Nothing subtle here -- moving faster costs more kinetic energy, in any
+direction, equally.
+
+### 2.3 Rotational kinetic energy -- and the subtlety that changes everything
+
+For a spinning rigid body, the rotational analog of $\frac12 mv^2$ is
+
+$$T_r = \frac{1}{2}\,\omega^T J\, \omega, \qquad J = \begin{bmatrix}J_x&0&0\\0&J_y&0\\0&0&J_z\end{bmatrix}$$
+
+where $\omega = [p,q,r]^T$ is the **body angular velocity** -- the three
+numbers a gyroscope physically bolted to the drone's frame would read off
+right now -- and $J$ is the moment-of-inertia matrix (how "hard to spin" the
+drone is about each of its own axes).
+
+Here's the subtlety, and it's worth slowing down for because it's the single
+most common mistake in this whole derivation: **$\omega$ is not $\dot\eta$.**
+It's tempting to write $[p,q,r]^T = [\dot\phi,\dot\theta,\dot\psi]^T$ directly
+-- but that's wrong, and here's the intuition for why.
+
+Imagine the drone is pitched fully sideways ($\theta = 90°$), and then you
+increase yaw ($\dot\psi > 0$, the compass-direction number is changing).
+Because the drone is already tipped over, "changing yaw" from that
+orientation doesn't correspond to spinning about the drone's own vertical
+axis at all anymore -- it's partially rolling it instead, from the body's
+point of view. $\dot\phi,\dot\theta,\dot\psi$ describe how fast each *Euler
+angle number* is changing; $p,q,r$ describe how fast the *body itself* is
+physically spinning about its own three axes right now. Those coincide only
+in special cases, not in general. This is exactly the same distinction
+recurring elsewhere in this project: it's the rotational analog of "NED
+position isn't the same as ENU position" -- two different, related, but
+distinct coordinate systems, and you need an explicit conversion between
+them.
+
+That conversion is a matrix, call it $W(\eta)$, satisfying:
 
 $$\omega = W(\eta)\,\dot\eta$$
 
-**Deriving $W(\eta)$:** using the ZYX aerospace convention,
-$R = R_z(\psi)\,R_y(\theta)\,R_x(\phi)$, and computing $\hat\omega = R^T\dot R$
-gives:
+### 2.4 Deriving $W(\eta)$
+
+We build the drone's orientation from three successive rotations (the
+aerospace-standard "ZYX" order: yaw, then pitch, then roll):
+$R(\eta) = R_z(\psi)R_y(\theta)R_x(\phi)$. The body angular velocity can be
+recovered from this rotation matrix and its time-derivative via
+$\hat\omega = R^T\dot R$ (a standard identity relating a rotation matrix's
+rate of change to the angular velocity it represents). Carrying that out
+gives, after simplification:
 
 $$\begin{bmatrix}p\\q\\r\end{bmatrix} =
-\begin{bmatrix}
+\underbrace{\begin{bmatrix}
 1 & 0 & -\sin\theta \\
 0 & \cos\phi & \sin\phi\cos\theta \\
 0 & -\sin\phi & \cos\phi\cos\theta
-\end{bmatrix}
-\begin{bmatrix}\dot\phi\\\dot\theta\\\dot\psi\end{bmatrix}
-= W(\eta)\,\dot\eta$$
+\end{bmatrix}}_{W(\eta)}
+\begin{bmatrix}\dot\phi\\\dot\theta\\\dot\psi\end{bmatrix}$$
 
-Substituting into $T_r$:
+Sanity-check it against the story above: at $\theta=0,\phi=0$ (drone level),
+$W$ reduces to the identity matrix, i.e. $\omega = \dot\eta$ exactly -- which
+matches intuition, since at that orientation the two coordinate systems
+briefly line up. Away from level flight, they diverge, exactly as the
+sideways-yaw example predicted.
 
-$$T_r = \frac{1}{2}\dot\eta^T W^T J W \dot\eta$$
+### 2.5 Putting rotational kinetic energy in terms of $\eta$
 
-So total kinetic energy:
+Substituting $\omega = W(\eta)\dot\eta$ into $T_r = \frac12\omega^TJ\omega$:
 
-$$T = \frac{1}{2} m \dot\xi^T \dot\xi + \frac{1}{2}\dot\eta^T W^T J W \dot\eta$$
+$$T_r = \frac{1}{2}\dot\eta^T \underbrace{W(\eta)^TJW(\eta)}_{M(\eta)}\dot\eta$$
 
-## 4. Potential energy
-
-$$V = mgz$$
-
-## 5. The Lagrangian
-
-$$L = T - V = \frac{1}{2} m \dot\xi^T \dot\xi + \frac{1}{2}\dot\eta^T W^T J W \dot\eta - mgz$$
-
-## 6. Equations of motion
-
-### 6.1 Translational
-
-$T_t$ depends only on $\dot\xi$, and $V$ depends only on $z$, so:
-
-$$\frac{\partial L}{\partial \dot\xi} = m\dot\xi \quad\Rightarrow\quad
-\frac{d}{dt}\left(\frac{\partial L}{\partial \dot\xi}\right) = m\ddot\xi,
-\qquad
-\frac{\partial L}{\partial \xi} = \begin{bmatrix}0\\0\\-mg\end{bmatrix}$$
-
-Giving:
-
-$$m\ddot\xi = Q_\xi - \begin{bmatrix}0\\0\\mg\end{bmatrix}$$
-
-where $Q_\xi = R\,[0, 0, T]^T$ -- the single thrust $T$ acts along the body
-z-axis and gets rotated into the world frame by $R$. Written out:
-
-$$m\ddot x = T(\sin\phi\sin\psi + \cos\phi\sin\theta\cos\psi)$$
-$$m\ddot y = T(-\sin\phi\cos\psi + \cos\phi\sin\theta\sin\psi)$$
-$$m\ddot z = T\cos\phi\cos\theta - mg$$
-
-This is the standard quadrotor translational model, and it's the one part of
-this whole derivation that survives directly into our actual code (see below).
-
-### 6.2 Rotational
-
-This is where it gets ugly. Differentiating $T_r = \frac12\dot\eta^T W^T J W
-\dot\eta$ with respect to $\eta$ and $\dot\eta$ produces extra terms *because
-$W$ itself depends on $\eta$* -- these are Coriolis/centrifugal-like coupling
-terms, exactly analogous to what shows up in manipulator-arm dynamics. The
-result has the general form:
-
-$$M(\eta)\,\ddot\eta + C(\eta, \dot\eta)\,\dot\eta = Q_\eta, \qquad M(\eta) = W^TJW$$
-
-**A correction worth being explicit about:** $Q_\eta$ here is the generalized
-force *conjugate to $\eta$*, not the real physical torque the motors produce
--- the motors act in the **body frame** ($\tau_{body}$), while our generalized
-coordinates are Euler angles. Using the virtual-work principle (real power
-delivered must match generalized power: $\tau_{body}\cdot\omega =
-Q_\eta\cdot\dot\eta$, and $\omega = W(\eta)\dot\eta$), the correct relation is
-
-$$Q_\eta = W(\eta)^T \tau_{body}$$
-
-so the full rotational equation of motion, in terms of the torque the motors
-actually produce, is
-
-$$M(\eta)\,\ddot\eta + C(\eta,\dot\eta)\,\dot\eta = W(\eta)^T \tau_{body}$$
-
-**Deriving $M(\eta)$:** carrying out $W^TJW$ explicitly gives
+Call this new combined matrix $M(\eta) = W^TJW$. Working through the matrix
+multiplication by hand (it's mechanical, just tedious -- each entry is a sum
+$M_{ij}=\sum_k J_k W_{ki}W_{kj}$) gives the explicit result:
 
 $$M(\eta) = \begin{bmatrix}
 J_x & 0 & -J_x\sin\theta \\
@@ -135,23 +190,132 @@ J_x & 0 & -J_x\sin\theta \\
 -J_x\sin\theta & (J_y-J_z)\sin\phi\cos\phi\cos\theta & J_x\sin^2\theta + J_y\sin^2\phi\cos^2\theta + J_z\cos^2\phi\cos^2\theta
 \end{bmatrix}$$
 
-**Deriving $C(\eta,\dot\eta)$:** rather than differentiate $L$ term-by-term by
-hand (extremely easy to drop a sign across dozens of trigonometric
-cross-terms), $C$ is computed the standard, systematic way -- via the
-Christoffel symbols of $M(\eta)$ (this is exactly how manipulator-arm dynamics
-are derived in, e.g., Spong, Hutchinson & Vidyasagar's *Robot Modeling and
-Control*):
+Notice something important for later: **$M(\eta)$ depends on the current
+orientation** ($\phi,\theta$ appear inside it). Physically: how "hard to
+rotate" the drone feels, expressed in terms of Euler-angle coordinates,
+changes depending on which way it's currently pointed. That's the seed of
+all the complexity in Part 4 -- an ordinary constant mass, like in
+$T_t=\frac12 m\dot\xi^T\dot\xi$, doesn't do this; $M(\eta)$ does.
 
-$$c_{ijk} = \frac{1}{2}\left(\frac{\partial M_{kj}}{\partial \eta_i} + \frac{\partial M_{ki}}{\partial \eta_j} - \frac{\partial M_{ij}}{\partial \eta_k}\right), \qquad
-C_{kj}(\eta,\dot\eta) = \sum_{i=1}^{3} c_{ijk}\,\dot\eta_i$$
+So, total kinetic energy:
 
-This was carried out symbolically (see `docs/scripts/derive_dynamics.py`,
-which reproduces every result here) rather than by hand, specifically to
-avoid transcription errors in dense trig algebra. As a correctness check,
-$\dot M(\eta) - 2C(\eta,\dot\eta)$ was confirmed symbolically to be
-skew-symmetric -- a well-known necessary property of any correctly-derived
-Coriolis matrix. The full result, with $s_\phi=\sin\phi$, $c_\phi=\cos\phi$,
-etc.:
+$$T = \frac{1}{2}m\dot\xi^T\dot\xi + \frac{1}{2}\dot\eta^TM(\eta)\dot\eta$$
+
+### 2.6 Potential energy
+
+Just gravity, and only position matters (orientation doesn't change height):
+
+$$V = mgz$$
+
+### 2.7 The Lagrangian
+
+$$L = T - V = \frac{1}{2}m\dot\xi^T\dot\xi + \frac{1}{2}\dot\eta^TM(\eta)\dot\eta - mgz$$
+
+We now have the one scalar function the whole rest of the derivation runs
+on. Everything from here is mechanical application of the recipe.
+
+---
+
+## Part 3: From energy to equations of motion
+
+### 3.1 The recipe
+
+The Euler-Lagrange equation says: for each coordinate $q_i$ in our vector
+$q$, the equation of motion is
+
+$$\frac{d}{dt}\left(\frac{\partial L}{\partial \dot q_i}\right) - \frac{\partial L}{\partial q_i} = Q_i$$
+
+where $Q_i$ is the **generalized force** acting on that coordinate -- the
+"push" from the outside world (the motors, in our case), expressed in the
+same coordinate system as $q_i$. We apply this once for the $\xi$ block
+(Section 3.2) and once for the $\eta$ block (Section 3.3) -- they turn out
+to decouple into two separate, independently-solvable equations, which is
+convenient, because the two halves are very different in difficulty.
+
+### 3.2 Translational equation of motion
+
+$L$'s only $\xi$-dependence is through $T_t=\frac12m\dot\xi^T\dot\xi$ (for
+velocity) and $V=mgz$ (for position). Plugging into the recipe:
+
+$$\frac{\partial L}{\partial \dot\xi} = m\dot\xi \implies \frac{d}{dt}\Big(\cdot\Big) = m\ddot\xi,
+\qquad \frac{\partial L}{\partial \xi} = \begin{bmatrix}0\\0\\-mg\end{bmatrix}$$
+
+$$\implies m\ddot\xi = Q_\xi - \begin{bmatrix}0\\0\\mg\end{bmatrix}$$
+
+What is $Q_\xi$ physically? It's the one force a quadrotor produces
+directly: a single thrust $T$ pushing along its own body z-axis, which then
+points wherever the drone is currently tilted. Rotating that body-frame
+thrust vector into world coordinates with the rotation matrix $R(\eta)$
+gives $Q_\xi = R(\eta)[0,0,T]^T$. Written out fully:
+
+$$m\ddot x = T(\sin\phi\sin\psi + \cos\phi\sin\theta\cos\psi)$$
+$$m\ddot y = T(-\sin\phi\cos\psi + \cos\phi\sin\theta\sin\psi)$$
+$$m\ddot z = T\cos\phi\cos\theta - mg$$
+
+This should match intuition: when level ($\phi=\theta=0$), thrust points
+straight up ($m\ddot z = T - mg$, $\ddot x=\ddot y=0$) -- exactly a hovering
+drone. Tilt it, and a component of that same thrust redirects horizontally.
+**This equation is the one piece of the whole derivation that survives,
+almost unchanged, into our actual point-mass MPC** -- our simplified model
+essentially trusts PX4 to handle the tilting part, and just uses this
+equation's *consequence* (mass times acceleration equals a controllable
+force) directly.
+
+### 3.3 Rotational equation of motion -- where it gets hard
+
+$L$'s $\eta$-dependence is only through $T_r=\frac12\dot\eta^TM(\eta)\dot\eta$
+($V$ doesn't involve orientation at all). Applying the same recipe:
+
+$$\frac{d}{dt}\left(\frac{\partial L}{\partial\dot\eta}\right) - \frac{\partial L}{\partial\eta} = Q_\eta$$
+
+Here's exactly where the difficulty from Section 2.5 shows up. If $M$ were a
+constant matrix, $\frac{\partial L}{\partial\dot\eta}=M\dot\eta$ and its time
+derivative would just be $M\ddot\eta$ -- done. But $M$ depends on $\eta$, so
+differentiating $\frac12\dot\eta^TM(\eta)\dot\eta$ with respect to $\eta$
+picks up *extra terms*, because the "mass" itself is changing as the
+coordinate it multiplies changes. Working through both differentiations, the
+result takes the general form
+
+$$M(\eta)\ddot\eta + C(\eta,\dot\eta)\dot\eta = Q_\eta$$
+
+$C(\eta,\dot\eta)\dot\eta$ collects exactly those extra terms. This is
+directly analogous to the Coriolis and centrifugal terms you may have seen
+in rotating-reference-frame problems (a spinning-frame effect), or to the
+identical-looking term in robot-arm dynamics -- it's a genuinely general
+phenomenon whenever a system's "effective mass" depends on its own
+configuration, not something specific to drones.
+
+**Building intuition for what $C$ represents physically:** think of a figure
+skater pulling their arms in mid-spin and speeding up without any external
+torque -- their moment of inertia changed *because of their own motion*, and
+that changing-inertia effect shows up as an apparent extra "force" in the
+equations even though no new torque was applied. $C(\eta,\dot\eta)\dot\eta$
+is the quadrotor's version of that same bookkeeping: it's what has to be
+added to account for $M(\eta)$ itself changing as the drone rotates.
+
+### 3.4 Deriving $C(\eta,\dot\eta)$ properly
+
+You could get $C$ by grinding through
+$\frac{d}{dt}\left(\frac{\partial L}{\partial\dot\eta}\right) -
+\frac{\partial L}{\partial\eta}$ term by term, but there's a systematic
+shortcut used throughout robotics for exactly this situation (any $T=\frac12
+\dot q^T M(q)\dot q$): the **Christoffel symbols** of $M$,
+
+$$c_{ijk} = \frac{1}{2}\left(\frac{\partial M_{kj}}{\partial \eta_i} + \frac{\partial M_{ki}}{\partial \eta_j} - \frac{\partial M_{ij}}{\partial \eta_k}\right),
+\qquad C_{kj}(\eta,\dot\eta) = \sum_{i=1}^{3} c_{ijk}\,\dot\eta_i$$
+
+This isn't a different, simpler physics -- it's the exact same result as
+brute-force differentiating $L$, just organized so you differentiate $M$
+(which we already have in closed form) rather than $L$ directly.
+
+Given how many trigonometric cross-terms are involved, this was carried out
+**symbolically** rather than by hand (see `docs/scripts/derive_dynamics.py`,
+which reproduces every result here exactly) -- specifically to avoid a
+transcription error in dense algebra. As a correctness check, a
+well-known necessary property of any correctly-derived $C$ -- that $\dot
+M(\eta) - 2C(\eta,\dot\eta)$ must be skew-symmetric -- was verified to hold
+exactly. The full result, with $s_\phi=\sin\phi,\ c_\phi=\cos\phi$, etc., and
+$c_{2\phi}=\cos2\phi$:
 
 $$C(\eta,\dot\eta) = \begin{bmatrix}
 0 & \dot\theta(J_y-J_z)s_\phi c_\phi - \frac{\dot\psi c_\theta}{2}\big[J_x+(J_y-J_z)c_{2\phi}\big] &
@@ -164,168 +328,191 @@ $$C(\eta,\dot\eta) = \begin{bmatrix}
   \dot\phi(J_y-J_z)s_\phi c_\phi c_\theta^2 + \dot\theta\big[(J_x-J_z)-(J_y-J_z)s_\phi^2\big]s_\theta c_\theta
 \end{bmatrix}$$
 
-where $c_{2\phi} = \cos 2\phi = \cos^2\phi - \sin^2\phi$.
+Notice, as a preview of Part 5's decision: **every single entry is scaled by
+either $(J_y-J_z)$ or $(J_x-J_z)$** -- differences between principal
+inertias -- and every entry is a *product of two angular rates*. Hold onto
+both of those observations; they're exactly the justification for what we do
+next.
 
-So the full rotational equations of motion are $M(\eta)\ddot\eta +
-C(\eta,\dot\eta)\dot\eta = W(\eta)^T\tau_{body}$, with $M$, $C$, and $W$ as
-derived above.
+### 3.5 The real torque isn't quite $Q_\eta$
 
-**A practical note:** in real implementations, this Euler-angle form is rarely
-used directly. It's algebraically correct, but $W(\eta)$ is singular at
-$\theta=\pm90°$ (gimbal lock), and $C$'s trig density makes it expensive to
-evaluate every control cycle. The far more common choice -- and what **PX4
-itself actually uses internally** -- is Newton-Euler in body rates instead:
+One more piece before we can call this equation finished. A real quadrotor's
+motors produce torque in the **body frame** -- call it $\tau_{body}$ -- but
+our recipe produces $Q_\eta$, the generalized force conjugate to *Euler
+angles*. These aren't automatically the same thing, for the identical reason
+$\omega\neq\dot\eta$ back in Section 2.3: body-frame quantities and
+Euler-angle-frame quantities are related, not identical.
 
-$$J\dot\omega + \omega \times (J\omega) = \tau$$
+The connection comes from the **virtual work principle**: the real physical
+power a torque delivers must equal the power computed in whatever
+coordinates you're using, i.e. $\tau_{body}\cdot\omega = Q_\eta\cdot\dot\eta$
+for every possible $\dot\eta$. Since $\omega=W(\eta)\dot\eta$ (Section 2.3
+again), this forces:
 
-algebraically much simpler, with no $C(\eta,\dot\eta)$ coupling term at all,
-and (combined with a quaternion attitude representation instead of Euler
-angles, which is what PX4's estimator/rate controller actually use) no
-gimbal-lock singularity either.
+$$Q_\eta = W(\eta)^T\tau_{body}$$
 
-## Connecting this to what we actually built
+So the complete rotational equation of motion, in terms of torque the motors
+actually produce, is:
 
-`mpc_solver.py` uses neither of the above. It models the drone as a **point
-mass**: state $[p_x,p_y,p_z,v_x,v_y,v_z]$, input = acceleration, dynamics =
-plain double integrator. Every bit of rotational dynamics derived above --
-$\phi,\theta,\psi$, $J$, $W(\eta)$, the whole $M\ddot\eta + C\dot\eta = \tau$
-mess -- is completely absent from our model.
+$$M(\eta)\ddot\eta + C(\eta,\dot\eta)\dot\eta = W(\eta)^T\tau_{body}$$
 
-That's a deliberate simplification, not an oversight, and it's the same
-architectural choice we made back when scoping this project: our MPC operates
-at the **guidance/trajectory layer**, commanding position/velocity/acceleration
-setpoints over Offboard mode, while PX4's own `mc_pos_control` -> attitude
-controller -> rate controller cascade (Section 6.2's territory, already solved
-and flight-tested inside PX4) handles turning "go this way" into actual body
-torques. Section 6.1's translational equation is, not coincidentally, almost
-exactly the model our point mass approximates (mass times acceleration equals
-the horizontal/vertical force PX4's inner loop is able to produce) -- we're
-just trusting PX4 to handle the tilt-angle/torque part of the equation for us.
+---
 
-The honest cost of this simplification: our MPC's acceleration commands are a
-*request*, not a guarantee -- if PX4's inner loop can't actually achieve the
-tilt needed to produce that acceleration fast enough (motor/attitude bandwidth
-limits, which our point mass has no concept of), real tracking will lag behind
-what the optimization predicted. That's very likely a contributor to the
-tracking jitter/shake observed during circle-tracking testing, alongside the
-solver re-solving independently each tick and reacting to raw sensor noise
-(see the state-estimation stretch goal).
+## Part 4: A practical note on representation
 
-If this project ever extended to Stage 4 (replacing PX4's inner loop with a
-full attitude/rate-level MPC, rather than riding on top of it), Section 6.2's
-$M(\eta)\ddot\eta + C(\eta,\dot\eta)\dot\eta = W(\eta)^T\tau_{body}$ form --
-or, more likely, its body-rate Newton-Euler equivalent -- is exactly the model
-that would need to go into the solver instead of the double integrator.
+Before moving on: in real flight-control implementations, this Euler-angle
+form is rarely used directly, for two concrete reasons visible in what we
+just derived. First, $W(\eta)$ has $\cos\theta$ in denominators once you
+invert it to solve for $\dot\eta$ -- at $\theta=\pm90°$ it becomes singular
+(**gimbal lock**). Second, $C$'s trigonometric density (Section 3.4) is
+expensive to evaluate every control cycle.
 
-## What actually changes if we build that Stage-4 MPC
+The standard alternative -- and what **PX4 itself uses internally** -- is
+Newton-Euler dynamics written directly in body rates, with orientation
+tracked as a quaternion instead of Euler angles:
 
-Worth being explicit about the real scope jump, since it's substantially more
-than swapping the dynamics function in `mpc_solver.py`:
+$$J\dot\omega + \omega\times(J\omega) = \tau_{body}$$
 
-- **State grows from 6 to 12** (position, velocity, orientation, angular
-  velocity), and becomes genuinely nonlinear -- $M(\eta)$ and $C(\eta,\dot\eta)$
-  above are configuration-dependent, unlike the point mass's constant,
-  linear double integrator.
-- **Representation choice matters.** This document derives everything in
-  Euler angles because that's the natural Euler-Lagrange route, but
-  $W(\eta)$'s gimbal-lock singularity at $\theta=\pm90°$ makes Euler angles a
-  real liability in an optimizer that might explore that region mid-solve.
-  The practical choice (and what PX4 itself uses) is quaternions + body rates
-  with the Newton-Euler form instead -- meaning a second derivation, not a
-  reuse of this one, if we want to match PX4's own internal representation.
-- **Solve time becomes the binding constraint.** IPOPT re-solving a nonlinear
-  program from scratch each tick was already the likely dominant cost in the
-  6-state point-mass version; a 12-state nonlinear model over the same
-  horizon is a much harder NLP. Real-time nonlinear MPC at attitude-loop rates
-  typically means code-generated solvers (e.g. `acados`, which was flagged as
-  a future option back when we first scoped this project) rather than
-  IPOPT-in-a-Python-loop.
-- **The PX4 interface changes entirely.** We'd no longer send
-  `TrajectorySetpoint` over a position-mode `OffboardControlMode` -- we'd be
-  commanding attitude or body-rate setpoints directly
-  (`OffboardControlMode.attitude`/`body_rate = True`, with
-  `VehicleAttitudeSetpoint`/`VehicleRatesSetpoint` instead), since we're now
-  replacing the inner loop rather than sitting above it.
+Algebraically simpler (no $C(\eta,\dot\eta)$ coupling matrix at all), and
+quaternions have no orientation at which the representation itself breaks
+down. We're deriving the Euler-angle version here because it's the natural
+route from Lagrangian mechanics and because gimbal lock isn't a practical
+concern for the gentle, non-aerobatic flight this project targets -- but if
+this were ever headed toward real hardware or aggressive maneuvers, this is
+the representation change that would come first.
 
-None of that is a reason not to do it -- just the honest reason it's a
-separate project phase, not an afternoon's edit.
+---
 
-## 7. Assembling the full nonlinear state-space model
+## Part 5: The decision -- do we actually need $C(\eta,\dot\eta)$?
 
-Sections 6.1 and 6.2 give two second-order equations. An MPC solver needs a
-single first-order ODE, $\dot x = f(x, u)$. Define the state as
+Recall the two observations flagged at the end of Section 3.4:
 
-$$x = \begin{bmatrix}\xi\\\eta\\\dot\xi\\\dot\eta\end{bmatrix} \in \mathbb{R}^{12}
-= [\,x,y,z,\ \phi,\theta,\psi,\ \dot x,\dot y,\dot z,\ \dot\phi,\dot\theta,\dot\psi\,]^T$$
+1. Every term in $C$ is a **product of two angular rates**
+   ($\dot\phi\dot\theta$, $\dot\phi\dot\psi$, $\dot\theta^2$, etc.) --
+   $C(\eta,\dot\eta)\dot\eta$ is therefore *quadratic* in how fast the drone
+   is rotating. Compare that to $M(\eta)\ddot\eta$, which is linear in
+   angular *acceleration* and present at any rotation speed, including zero.
+   A quadratic-in-rate term shrinks fast as rates shrink -- and this project
+   flies a gentle circle, not an aerobatic routine, so angular rates stay
+   small throughout.
+2. Every entry is scaled by an inertia *difference*, $(J_y-J_z)$ or
+   $(J_x-J_z)$ -- not by the inertias themselves. A quadrotor with a roughly
+   symmetric mass distribution (true of most common frames, including the
+   x500 we're simulating) has $J_y\approx J_z$, which pushes several terms
+   toward zero regardless of speed.
 
-Then, solving each second-order equation for its highest derivative:
+Both effects point the same direction, and for our situation, both apply.
+**Decision: drop $C(\eta,\dot\eta)\dot\eta$.** The rotational equation of
+motion we'll actually implement is the simplified
 
-$$\dot x = f(x, u) = \begin{bmatrix}
-\dot\xi \\
-\dot\eta \\
-\dfrac{1}{m}\Big(R(\eta)\,[0,0,T]^T - [0,0,mg]^T\Big) \\
-M(\eta)^{-1}\Big(W(\eta)^T\tau_{body} - C(\eta,\dot\eta)\dot\eta\Big)
+$$M(\eta)\ddot\eta = W(\eta)^T\tau_{body}$$
+
+This is a legitimate, standard, and commonly-used simplification for
+near-hover multicopter flight -- not a shortcut taken out of laziness. It's
+also honestly bounded: it stops being valid for fast, aggressive rotation
+(drone racing, aerobatics) or a deliberately asymmetric airframe, where
+$C(\eta,\dot\eta)\dot\eta$ would no longer be small. If this project ever
+extended toward that kind of flight, Section 3.4's full result is what would
+need to go back in -- it isn't wasted work, it's the documented fallback.
+
+---
+
+## Part 6: Assembling the full model
+
+### 6.1 The state-space form
+
+An MPC solver needs a single first-order equation, $\dot x = f(x,u)$, not two
+separate second-order ones. Define the state by stacking position,
+orientation, and both their rates:
+
+$$x = \begin{bmatrix}\xi\\\eta\\\dot\xi\\\dot\eta\end{bmatrix} \in\mathbb{R}^{12}$$
+
+Then, solving Section 3.2's and Part 5's equations for the highest
+derivative in each:
+
+$$\dot x = f(x,u) = \begin{bmatrix}
+\dot\xi\\
+\dot\eta\\
+\dfrac{1}{m}\Big(R(\eta)[0,0,T]^T - [0,0,mg]^T\Big)\\
+M(\eta)^{-1}W(\eta)^T\tau_{body}
 \end{bmatrix}$$
 
-The first two rows are trivial (velocity states carry straight through); the
-last two are Sections 6.1 and 6.2 solved for $\ddot\xi$ and $\ddot\eta$
-respectively. This is a genuinely nonlinear ODE -- $R(\eta)$, $M(\eta)$,
-$M(\eta)^{-1}$, and $C(\eta,\dot\eta)$ are all trigonometric functions of the
-state itself, unlike the point mass's constant, linear $\dot v = u$.
+(the first two rows are trivial -- velocity states just carry through
+unchanged). This is a genuinely nonlinear ODE: $R(\eta)$, $M(\eta)$, and
+$M(\eta)^{-1}$ are all trigonometric functions of the state itself, unlike
+the point mass's constant, linear $\dot v = u$.
 
-## 8. What the control input actually is
+### 6.2 What the controls actually are
 
-$T$ and $\tau_{body}$ above aren't the real control input either -- a
-quadrotor has exactly four actuators (four rotor thrusts $f_1,f_2,f_3,f_4$),
-and $T,\tau_{body}$ are a convenient intermediate quantity produced by all
-four together. For a simple "+" configuration (front/back/left/right rotors),
-with arm length $l$ and rotor drag-torque coefficient $c$:
+$T$ and $\tau_{body}$ aren't the real control input either -- they're
+produced *together* by the drone's four actual actuators, the individual
+rotor thrusts $f_1,f_2,f_3,f_4$. For a "+"-configuration frame with arm
+length $l$ and rotor drag-torque coefficient $c$:
 
 $$\begin{bmatrix}T\\\tau_\phi\\\tau_\theta\\\tau_\psi\end{bmatrix} =
-\begin{bmatrix}
-1 & 1 & 1 & 1\\
-0 & l & 0 & -l\\
--l & 0 & l & 0\\
-c & -c & c & -c
-\end{bmatrix}
+\begin{bmatrix}1&1&1&1\\0&l&0&-l\\-l&0&l&0\\c&-c&c&-c\end{bmatrix}
 \begin{bmatrix}f_1\\f_2\\f_3\\f_4\end{bmatrix}$$
 
-This is the "mixer" or "control allocation" matrix -- PX4 has its own version
-of exactly this (rotated 45° for an X-configuration airframe like the x500 we
-fly), implemented in its `control_allocator` module. So the *true* control
-input for a real-dynamics MPC is $u = [f_1,f_2,f_3,f_4]$, each individually
-bounded ($0 \le f_i \le f_{max}$ -- a rotor can only push, never pull, and has
-a maximum RPM) -- constraints that don't have a clean equivalent in $T,
-\tau_{body}$ space, which is why serious implementations formulate the NLP
-directly in terms of $f_i$.
+This is the **mixer** (or "control allocation") matrix -- PX4 has its own
+version of exactly this (rotated 45° for our X-configuration x500), in its
+`control_allocator` module. The true control input for a real-dynamics MPC
+is $u=[f_1,f_2,f_3,f_4]$, each individually bounded ($0\le f_i\le f_{max}$ --
+a rotor can push but never pull, and has a maximum RPM) -- a constraint that
+doesn't translate cleanly into $T,\tau_{body}$ space, which is why serious
+implementations formulate the optimization directly in terms of $f_i$.
 
-## 9. The actual nonlinear MPC problem
+---
 
-With $\dot x = f(x,u)$ and $u=[f_1,f_2,f_3,f_4]$ in hand, the NMPC problem
-(direct multiple-shooting, the standard formulation) is:
+## Part 7: The actual optimization problem
 
-$$\min_{x_{0:N},\,u_{0:N-1}} \sum_{k=0}^{N-1}\Big[(x_k - x_k^{ref})^T Q (x_k - x_k^{ref}) + (u_k - u_{hover})^T R\, u_k\Big] + (x_N-x_N^{ref})^T Q_f (x_N-x_N^{ref})$$
+With $\dot x=f(x,u)$ and $u=[f_1,f_2,f_3,f_4]$ established, the nonlinear MPC
+problem (using the standard "direct multiple shooting" formulation) is:
+
+$$\min_{x_{0:N},\,u_{0:N-1}} \sum_{k=0}^{N-1}\Big[(x_k-x_k^{ref})^TQ(x_k-x_k^{ref}) + (u_k-u_{hover})^TR\,u_k\Big] + (x_N-x_N^{ref})^TQ_f(x_N-x_N^{ref})$$
 
 subject to:
 
-- $x_0 = x(t)$ -- the current measured/estimated state
-- $x_{k+1} = \text{RK4}(x_k, u_k, \Delta t)$ for $k=0,\dots,N-1$ -- the
-  nonlinear dynamics above, integrated with a proper Runge-Kutta step (forward
-  Euler, good enough for the point mass, is generally too inaccurate for the
-  faster rotational dynamics)
-- $0 \le f_i \le f_{max}$ for each rotor -- actuator limits
-- optionally, state bounds like $|\phi|,|\theta| \le \theta_{max}$ (cap tilt
-  angle) and/or obstacle constraints, same idea as discussed earlier for the
-  point-mass version
+- $x_0 = x(t)$ -- start from the current measured/estimated state
+- $x_{k+1} = \text{RK4}(x_k,u_k,\Delta t)$ -- the dynamics above, integrated
+  with a proper Runge-Kutta step (forward Euler, fine for the point mass, is
+  generally too crude once rotational dynamics are involved)
+- $0\le f_i\le f_{max}$ for each rotor
+- optionally, tilt limits ($|\phi|,|\theta|\le\theta_{max}$) and/or obstacle
+  constraints, same idea as discussed for the point-mass version
 
-**The qualitative difference from our point-mass MPC**, concretely: in
-`mpc_solver.py`, the solver directly chooses an acceleration and trusts it's
-achievable. Here, the solver must reason about the *entire causal chain*
-itself -- to accelerate horizontally, it first has to command rotor thrusts
-that produce a torque, that (through $M(\eta)^{-1}$ and $C(\eta,\dot\eta)$)
-produces an angular acceleration, that changes $\eta$, that (through $R(\eta)$
-in the translational equation) finally redirects the thrust vector to produce
-the acceleration it wants. That whole chain is exactly what our point mass
-abstracted away and simply assumed PX4 would handle -- a real-dynamics MPC
-has to solve it explicitly, every horizon step, which is precisely why it's a
-much harder NLP and why solve time becomes the binding real-time constraint.
+**The qualitative shift from our point-mass MPC, stated plainly:** right now,
+`mpc_solver.py` picks an acceleration and simply trusts PX4 can deliver it.
+The model derived here can't take that shortcut -- to accelerate
+horizontally, the solver has to command rotor thrusts that produce a torque,
+that (through $M(\eta)^{-1}$) produces an angular acceleration, that changes
+$\eta$ over time, that (through $R(\eta)$ back in Section 3.2) finally
+redirects the thrust vector to produce the acceleration it actually wanted.
+That whole causal chain is exactly what the point mass abstracted away.
+Reasoning through it explicitly, every horizon step, is what makes this a
+genuinely harder optimization problem -- and is why solve time (not modeling
+accuracy) becomes the binding real-time constraint, likely requiring a
+code-generated solver like `acados` rather than IPOPT called fresh in a
+Python loop.
+
+---
+
+## Summary, for when you come back to this later
+
+- The drone's configuration is six numbers: position $\xi$ and Euler angles
+  $\eta$.
+- Kinetic energy splits into translational ($\frac12m\dot\xi^T\dot\xi$, easy)
+  and rotational ($\frac12\dot\eta^TM(\eta)\dot\eta$, harder -- because
+  $\omega\neq\dot\eta$, and $M(\eta)=W^TJW$ depends on orientation).
+- Euler-Lagrange turns that energy into two equations: translational (Section
+  3.2, survives into our current code) and rotational (Section 3.3,
+  $M\ddot\eta+C\dot\eta=W^T\tau_{body}$).
+- $C(\eta,\dot\eta)$ is real, correctly derived, and symbolically verified --
+  but we deliberately drop it (Part 5), because it's quadratic in angular
+  rate and scaled by inertia *differences*, both of which are small for our
+  gentle flight on a roughly symmetric frame.
+- The real control input is four rotor thrusts, related to thrust/torque by
+  a fixed mixer matrix (Section 6.2).
+- The full nonlinear MPC problem (Part 7) has to reason through the entire
+  tilt-then-accelerate causal chain that our current point-mass model skips
+  -- which is both the whole point of upgrading to it, and the reason it's a
+  meaningfully harder problem to solve in real time.
