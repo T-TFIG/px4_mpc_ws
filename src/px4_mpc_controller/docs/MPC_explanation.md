@@ -225,9 +225,15 @@ $q$, the equation of motion is
 
 $$\frac{d}{dt}\left(\frac{\partial L}{\partial \dot q_i}\right) - \frac{\partial L}{\partial q_i} = Q_i$$
 
-where $Q_i$ is the **generalized force** acting on that coordinate -- the
-"push" from the outside world (the motors, in our case), expressed in the
-same coordinate system as $q_i$. We apply this once for the $\xi$ block
+**Where $Q_i$ comes from, and why it's needed at all:** $L=T-V$ only
+captures energy the system already accounts for on its own -- kinetic
+energy, and *conservative* forces like gravity that come from a potential
+(that's what $V=mgz$ already is). $L$ has no way to know about forces being
+actively applied from outside. $Q_i$ is exactly that missing piece -- the
+**generalized force**: whatever external push is doing work on coordinate
+$q_i$ that isn't already baked into $V$. For our drone, gravity's already
+inside $L$; the only other force is the rotors' thrust, so that's all $Q_i$
+needs to represent. We apply this once for the $\xi$ block
 (Section 3.2) and once for the $\eta$ block (Section 3.3) -- they turn out
 to decouple into two separate, independently-solvable equations, which is
 convenient, because the two halves are very different in difficulty.
@@ -242,11 +248,25 @@ $$\frac{\partial L}{\partial \dot\xi} = m\dot\xi \implies \frac{d}{dt}\Big(\cdot
 
 $$\implies m\ddot\xi = Q_\xi - \begin{bmatrix}0\\0\\mg\end{bmatrix}$$
 
-What is $Q_\xi$ physically? It's the one force a quadrotor produces
-directly: a single thrust $T$ pushing along its own body z-axis, which then
-points wherever the drone is currently tilted. Rotating that body-frame
-thrust vector into world coordinates with the rotation matrix $R(\eta)$
-gives $Q_\xi = R(\eta)[0,0,T]^T$. Written out fully:
+**Where $Q_\xi$ comes from:** it's the one force a quadrotor produces
+directly -- a single thrust $T$, from the four rotors combined, always
+pushing along the drone's *own* body z-axis. In body-frame coordinates
+that vector is simply $[0,0,T]^T$ ("straight up," relative to the body,
+by definition of the body frame). But $\xi=[x,y,z]$ is a **world-frame**
+coordinate, so the generalized force conjugate to it has to be that same
+physical thrust, described in world-frame coordinates instead. $R(\eta)$ is
+exactly the tool for that -- by definition, it takes a vector expressed in
+body-frame components and re-expresses that same physical vector in
+world-frame components. So:
+
+$$Q_\xi = R(\eta)\,[0,0,T]^T$$
+
+is nothing more exotic than "take the thrust vector as the body sees it, and
+rotate it into how the world sees it." (Contrast this with $Q_\eta$ in
+Section 3.5, which needs a genuinely extra derivation step -- $\eta$ is a
+set of angles, not a Cartesian position, so there's no single rotation
+matrix that directly converts a torque into it the way $R(\eta)$ converts a
+force into $Q_\xi$ here.) Written out fully:
 
 $$m\ddot x = T(\sin\phi\sin\psi + \cos\phi\sin\theta\cos\psi)$$
 $$m\ddot y = T(-\sin\phi\cos\psi + \cos\phi\sin\theta\sin\psi)$$
