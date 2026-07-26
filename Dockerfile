@@ -1,5 +1,7 @@
 FROM osrf/ros:jazzy-desktop-full
 
+SHELL ["/bin/bash", "-c"]
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ROS_DISTRO=jazzy
 ENV PX4_VERSION=v1.17.0
@@ -28,7 +30,7 @@ RUN bash ./Tools/setup/ubuntu.sh --no-nuttx
 RUN make px4_sitl_default
 
 # --- Micro XRCE-DDS Agent: bridges PX4 uORB topics to ROS2 DDS ---
-RUN git clone -b v2.4.2 --depth 1 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /Micro-XRCE-DDS-Agent \
+RUN git clone -b v2.4.3 --depth 1 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git /Micro-XRCE-DDS-Agent \
     && cd /Micro-XRCE-DDS-Agent \
     && mkdir build && cd build \
     && cmake .. \
@@ -53,5 +55,8 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.bash && colcon build
 RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc && \
     echo "source /px4_mpc_ws/install/setup.bash" >> /root/.bashrc
 
-SHELL ["/bin/bash", "-c"]
-ENTRYPOINT ["/bin/bash"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]
