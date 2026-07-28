@@ -65,10 +65,17 @@ make px4_sitl gz_x500
 Wait for the Gazebo window to open showing an x500 quadrotor on a ground plane, and for the
 terminal to settle at a `pxh>` prompt.
 
-> **Run this in a real terminal, not detached or piped.** PX4's `pxh>` console needs an
-> interactive TTY. Without one it spins on stdin EOF, floods its log with prompt redraws, and
-> the vehicle may fail to arm even though the bridge and setpoints look healthy. This is easy
-> to mistake for a controller bug — it isn't. (See Troubleshooting.)
+> **Prefer a real terminal.** PX4's `pxh>` console expects stdin. If you background it with
+> stdin closed it spins on EOF and floods its log with prompt redraws, which makes the log
+> unreadable. It does still fly — but you lose the `pxh>` console, which is where
+> `commander check` lives and that is the single most useful debugging tool when the vehicle
+> won't arm. If you do need it detached, give it a FIFO on stdin rather than closing stdin:
+>
+> ```bash
+> mkfifo /tmp/px4_in
+> tail -f /tmp/px4_in | make px4_sitl gz_x500 > /tmp/px4.log 2>&1 &
+> echo "commander check" > /tmp/px4_in   # inject console commands this way
+> ```
 
 You should **not** need to type anything at `pxh>`. The SITL parameter overrides in
 [`sitl/4001_gz_x500.post`](../sitl/4001_gz_x500.post) are applied automatically at every boot
@@ -255,22 +262,71 @@ have no publisher at all:
 
 ### Drone won't arm (`arming_state: 1`, `pre_flight_checks_pass: false`)
 
-In order of likelihood:
+**First, get the actual reason.** Don't guess — at the `pxh>` prompt run:
 
-1. **PX4 was not started in an interactive terminal.** See the warning in Section 2. This is
-   the most common cause and the least obvious.
-2. **The `.post` overrides didn't apply.** Verify indirectly — if `SIM_BAT_ENABLE 0` took
-   effect, the battery topic will be silent:
-   ```bash
-   ros2 topic hz /fmu/out/battery_status_v1   # should time out with no output
-   ```
-   If it *is* publishing, the `.post` file isn't being sourced. Check it exists at
-   `/PX4-Autopilot/build/px4_sitl_default/etc/init.d-posix/airframes/4001_gz_x500.post`.
-3. **Stale nodes from a previous run.** If `mpc_node` is still running from an earlier session
-   while PX4 has restarted, kill everything and start clean:
-   ```bash
-   pkill -f lib/px4_mpc_controller; pkill -x MicroXRCEAgent
-   ```
+```
+commander check
+```
+
+This prints the specific failing check by name. Everything below is keyed to that output.
+
+#### `Preflight Fail: heading estimate not stable`
+
+The EKF's yaw estimate is stuck in a reset loop, almost always caused by a **corrupt
+magnetometer calibration persisted in `parameters.bson`**.
+
+Diagnose it:
+
+```bash
+ros2 topic echo --qos-profile sensor_data /fmu/out/vehicle_local_position_v1 --once \
+  | grep -E "heading_var|heading_reset_counter|heading_good_for_control"
+```
+
+If `heading_reset_counter` climbs steadily (every few seconds, indefinitely) and `heading_var`
+stays pinned at a fixed value instead of decreasing, the estimate is resetting faster than it
+can converge. Confirm the cause:
+
+```
+param show CAL_MAG0_XOFF
+```
+
+In SITL the simulated magnetometer has **no hard-iron distortion**, so every `CAL_MAG*_?OFF`
+should be `0.0000`. Any non-zero value is a bogus calibration that will corrupt the heading
+estimate on every boot, because PX4 persists parameters across restarts.
+
+**Fix — reset PX4 to factory parameters:**
+
+```bash
+# stop PX4 first, then:
+rm /PX4-Autopilot/build/px4_sitl_default/rootfs/parameters.bson \
+   /PX4-Autopilot/build/px4_sitl_default/rootfs/parameters_backup.bson
+```
+
+The `.post` overrides are re-applied automatically on the next boot, so nothing this project
+needs is lost. After restarting, `heading_reset_counter` should settle at `1` and
+`commander check` should report `Preflight check: OK`.
+
+This is worth knowing about because it is **persistent and silent**: once a bad calibration is
+saved, every subsequent run fails identically, which makes it look like a code regression when
+nothing in the code changed.
+
+#### `Preflight Fail: No connection to the GCS`
+
+`NAV_DLL_ACT` is not `0`. Verify with `param show NAV_DLL_ACT`. It should be set automatically
+by the `.post` file; if not, check that file exists at
+`/PX4-Autopilot/build/px4_sitl_default/etc/init.d-posix/airframes/4001_gz_x500.post`.
+
+#### Other causes
+
+- **Stale nodes from a previous run.** If `mpc_node` is still running from an earlier session
+  while PX4 has restarted, kill everything and start clean:
+  ```bash
+  pkill -f lib/px4_mpc_controller; pkill -x MicroXRCEAgent
+  ```
+- **Arming too early.** `mpc_node` waits for `pre_flight_checks_pass` and retries every 2 s, so
+  this should self-resolve. If you see `waiting for PX4 preflight checks to pass before
+  arming` repeating for more than ~60 s, run `commander check` — something is genuinely
+  failing.
 
 ### Drone arms, climbs, then immediately returns and lands
 

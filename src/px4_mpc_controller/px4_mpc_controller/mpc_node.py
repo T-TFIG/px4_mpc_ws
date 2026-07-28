@@ -58,6 +58,13 @@ class MpcNode(Node, OffboardArmingMixin):
         self._setpoint_counter = 0
         self._t0 = None  # sim-relative start time for the trajectory, set on first tick
 
+        # Arming state machine (see _try_arm)
+        self._armed = False
+        self._preflight_ok = False
+        self._last_arm_attempt = -1e9
+        self._last_wait_log = -1e9
+        self._arm_retry_period = 2.0  # seconds between arm attempts
+
         self.create_timer(self._dt, self._timer_callback)
 
     def _declare_parameters(self):
@@ -82,6 +89,9 @@ class MpcNode(Node, OffboardArmingMixin):
             [msg.x, msg.y, msg.z, msg.vx, msg.vy, msg.vz], dtype=float)
 
     def _vehicle_status_callback(self, msg: VehicleStatus):
+        self._armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        self._preflight_ok = msg.pre_flight_checks_pass
+
         if msg.nav_state != self._nav_state:
             self._nav_state = msg.nav_state
             offboard = (msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD)
@@ -109,11 +119,47 @@ class MpcNode(Node, OffboardArmingMixin):
         position_sp, velocity_sp, accel_sp = self._solver.solve(self._current_state, p_ref, v_ref)
         self._publish_trajectory_setpoint(position_sp, velocity_sp, accel_sp)
 
-        if self._setpoint_counter == 10:
-            self._engage_offboard_mode()
-            self._arm()
-        if self._setpoint_counter < 11:
-            self._setpoint_counter += 1
+        self._setpoint_counter += 1
+        self._try_arm()
+
+    def _try_arm(self):
+        """Request offboard + arm, retrying until PX4 confirms it is armed.
+
+        This must be a retry loop, not a one-shot. PX4 rejects arming
+        (VEHICLE_CMD_RESULT_TEMPORARILY_REJECTED) until its own health checks pass --
+        the EKF heading estimate in particular can take tens of seconds to settle after
+        boot, and the battery estimate is briefly invalid right after startup. Firing
+        the arm command once on a fixed timer means that if either is momentarily
+        unhappy, the vehicle stays disarmed forever while the node happily streams
+        setpoints, which looks like a controller bug but is not one.
+
+        We also wait for pre_flight_checks_pass before even asking, so we're not
+        spamming commands PX4 is guaranteed to refuse.
+        """
+        if self._armed:
+            return
+
+        # Stream setpoints briefly before requesting the mode switch; PX4 requires an
+        # established setpoint stream before it will accept Offboard.
+        if self._setpoint_counter < 10:
+            return
+
+        if not self._preflight_ok:
+            now = self._elapsed_seconds()
+            if now - self._last_wait_log > 5.0:
+                self._last_wait_log = now
+                self.get_logger().info(
+                    'waiting for PX4 preflight checks to pass before arming '
+                    '(EKF heading and battery estimates settle a few seconds after boot)')
+            return
+
+        now = self._elapsed_seconds()
+        if now - self._last_arm_attempt < self._arm_retry_period:
+            return
+        self._last_arm_attempt = now
+
+        self._engage_offboard_mode()
+        self._arm()
 
     def _elapsed_seconds(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
