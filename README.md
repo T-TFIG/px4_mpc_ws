@@ -13,9 +13,10 @@ as offboard setpoints.
 
 ![MPC tracking a circular reference in PX4 SITL](docs/media/mpc_circle_tracking.gif)
 
-RViz2 view looking down on the NED plane. **Red** is the reference circle (5 m radius, 20 s
-per lap); **green** is the drone's actual flown path, accumulated over several laps at 5 m
-altitude in Gazebo SITL.
+The full running stack: **Gazebo Sim** on the left with the x500 airframe, **RViz2** on the
+right showing the trajectory from above in the NED plane. In the RViz view, **red** is the
+reference circle (5 m radius, 20 s per lap) and **green** is the drone's actual flown path,
+accumulated over several laps at 5 m altitude.
 
 The visible oscillation of the green trace about the red reference is real tracking error, not
 a rendering artifact — roughly ±0.3 m. Its causes are understood and written up in
