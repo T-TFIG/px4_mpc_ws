@@ -1,59 +1,57 @@
-# From a Point Mass to a Real Quadrotor: The Dynamics and Control Behind Our MPC
+# From a Point Mass to a Real Quadrotor: Dynamics and Model Predictive Control
 
-## Why this document exists
+## Scope and purpose
 
-Right now, `mpc_solver.py` controls the drone by pretending it's a point
-mass -- a dot with position and velocity, pushed around by an acceleration
-we get to choose freely. That's a real simplification: a real quadrotor
-can't just accelerate sideways, it has to *tilt* first, and tilting takes
-time and is itself governed by physics we haven't modeled at all yet.
+This document is my derivation of the quadrotor equations of motion and of
+the model predictive controller built on top of them, written out in full so
+that every step can be traced back to the one before it.
 
-This document builds the *real* model, one honest step at a time -- and then
-builds the *control* on top of it: what MPC actually is, why it needs a
-prediction horizon, why it throws away most of what it computes, and what it
-means mathematically for its answer to be optimal.
+The controller currently implemented in `mpc_solver.py` models the drone as a
+point mass: a dot with position and velocity, driven by an acceleration I
+choose directly. That is a real simplification. A quadrotor cannot accelerate
+sideways on demand -- it must tilt first, and tilting takes time and is
+governed by rotational dynamics that the point-mass model ignores entirely.
 
-Nothing here is dropped in as a finished formula. Every equation is derived
-from the one before it, with an explanation of *why* that step happens, so
-you can always trace an equation back to where it came from instead of having
-to take it on faith. If an equation appears without its origin explained,
-that's a bug in this document -- say so and it will be fixed.
+Here I derive the full rigid-body model, and then build the control problem
+on top of it: what MPC is, why it needs a prediction horizon, why it discards
+most of what it computes, and what it means mathematically for its answer to
+be optimal.
 
-### Roadmap -- where we're going
+I have deliberately avoided stating results without deriving them. Where I
+make a simplifying assumption -- and I make several -- I state it explicitly,
+justify it, and record the conditions under which it stops being valid.
+
+### Roadmap
 
 The document has two halves.
 
-**Half one: the model (Parts 1-6).** We'll describe the drone with six
-numbers: three for position, three for orientation. We'll write down its
-kinetic and potential energy in terms of those six numbers and their rates of
-change, because there's a systematic recipe (Euler-Lagrange) that turns
-"energy as a function of coordinates" directly into "equations of motion" --
-no need to draw every force by hand. Applying that recipe splits cleanly into
-two halves: a straightforward one for position, and a genuinely messy one for
-orientation, because the drone's orientation-related "effective mass" changes
-as it tilts. We'll derive that messiness properly (it's called the Coriolis
-term), and *then* make a deliberate, justified decision to drop it, because
-for the way our drone actually flies it turns out to be small enough not to
-matter. Finally we connect the physical torques a real quadrotor produces to
-what its four motors actually do, and assemble everything into a single
-nonlinear state-space model $\dot x = f(x,u)$.
+**Half one: the model (Parts 1-6).** I describe the drone with six
+generalized coordinates -- three for position, three for orientation -- and
+write its kinetic and potential energy in terms of them. Euler-Lagrange then
+converts that energy directly into equations of motion, which avoids the
+error-prone bookkeeping of drawing every force and torque by hand. The recipe
+splits into a straightforward translational half and a genuinely messy
+rotational half, the latter because the drone's orientation-dependent
+"effective mass" changes as it tilts. I derive that messiness in full (the
+Coriolis term), then make a deliberate decision to drop it, with the
+justification and its limits stated explicitly. Finally I connect the
+physical torques to what the four rotors actually produce, and assemble
+everything into a single nonlinear state-space model $\dot x = f(x,u)$.
 
-**Half two: the control (Parts 7-12).** A model tells you what the drone
-*will do*; it doesn't tell you what to *command*. We'll see why the obvious
-greedy approach fails (some correct actions, like braking, look bad in the
-short term), which forces us to optimize a whole *sequence* over a
-**prediction horizon**. We'll cover why we then throw away all but the first
-step and re-plan -- the **receding horizon** principle, and the thing that
-makes MPC a feedback controller. Then we build the cost function and
-constraints that define the optimization, and finally derive from scratch
-what it even means for a solution to be optimal: **Lagrange multipliers** and
-the **KKT conditions**, which are what every numerical solver is ultimately
-trying to satisfy.
+**Half two: the control (Parts 7-12).** A model says what the drone *will
+do*; it does not say what to *command*. I show why the obvious greedy
+approach fails -- some correct actions, such as braking, look bad in the
+short term -- which forces optimization over a whole *sequence* spanning a
+**prediction horizon**. I then cover why all but the first step of that
+sequence is discarded and the problem re-solved: the **receding horizon**
+principle, and the reason MPC qualifies as a feedback controller at all.
+From there I build the cost function and constraints that define the
+optimization, and finally derive from scratch what optimality means for a
+constrained problem: **Lagrange multipliers** and the **KKT conditions**,
+which are what every numerical solver is ultimately trying to satisfy.
 
-A companion document, `MPC_solver.md`, then covers how a computer actually
-*finds* such a solution fast enough to fly on.
-
-If at any point you feel lost, jump back to this section -- it's the map.
+A companion document, `MPC_solver.md`, covers how those conditions are
+actually solved for numerically, fast enough to fly on.
 
 ---
 
@@ -68,12 +66,14 @@ it's doing at one instant -- is two things:
 2. **Which way it's pointing**: three more numbers, some parameterization of
    orientation.
 
-For orientation, we'll use the most common choice for aircraft: **Euler
-angles** roll ($\phi$), pitch ($\theta$), and yaw ($\psi$) -- the same three
-angles you'd use to describe "tilted this much sideways, tilted this much
-forward/back, pointed this compass direction." (We'll see later that this
-choice has a real downside -- gimbal lock -- but it's the natural one to
-start with, and it's what lets us use the energy-based method below cleanly.)
+For orientation I use the most common choice for aircraft: **Euler angles**
+roll ($\phi$), pitch ($\theta$), and yaw ($\psi$) -- the same three angles
+you'd use to describe "tilted this much sideways, tilted this much
+forward/back, pointed this compass direction." This choice has a real
+downside, gimbal lock, which I address in Part 4; I take it anyway because it
+is the natural parameterization for the energy-based derivation that follows,
+and because the singularity lies well outside the flight envelope this
+controller targets.
 
 Put together, that's six numbers describing the drone completely (ignoring,
 for now, how fast anything is changing):
@@ -89,13 +89,13 @@ specific physical meaning like Cartesian position alone.
 
 ### 1.2 Why bother with energy instead of just F = ma?
 
-You *could* derive the drone's equations of motion by drawing every force
-and torque by hand and applying Newton's laws directly. For a single rigid
-body that's very doable. The reason we won't do that here is that this
-system has an awkward complication baked in: our orientation coordinates
-($\phi,\theta,\psi$) are not the same thing as the angular velocity a
-gyroscope on the drone would actually measure (we'll make this precise in a
-moment) -- and once that distinction exists, force-diagram bookkeeping gets
+The equations of motion *can* be derived by drawing every force and torque by
+hand and applying Newton's laws directly. For a single rigid body that is
+perfectly doable. I avoid it here because this system has an awkward
+complication baked in: the orientation coordinates ($\phi,\theta,\psi$) are
+not the same thing as the angular velocity a gyroscope on the drone would
+actually measure (made precise in Section 2.3) -- and once that distinction
+exists, force-diagram bookkeeping gets
 error-prone fast.
 
 **Lagrangian mechanics** sidesteps this. Instead of forces, you write down
@@ -148,10 +148,10 @@ numbers a gyroscope physically bolted to the drone's frame would read off
 right now -- and $J$ is the moment-of-inertia matrix (how "hard to spin" the
 drone is about each of its own axes).
 
-Here's the subtlety, and it's worth slowing down for because it's the single
-most common mistake in this whole derivation: **$\omega$ is not $\dot\eta$.**
-It's tempting to write $[p,q,r]^T = [\dot\phi,\dot\theta,\dot\psi]^T$ directly
--- but that's wrong, and here's the intuition for why.
+This is the subtlety that drives everything downstream, and it is the most
+common error in this derivation: **$\omega$ is not $\dot\eta$.** It is
+tempting to write $[p,q,r]^T = [\dot\phi,\dot\theta,\dot\psi]^T$ directly.
+That is wrong, and the reason is worth making concrete.
 
 Imagine the drone is pitched fully sideways ($\theta = 90°$), and then you
 increase yaw ($\dot\psi > 0$, the compass-direction number is changing).
@@ -442,19 +442,21 @@ Recall the two observations flagged at the end of Section 3.4:
    x500 we're simulating) has $J_y\approx J_z$, which pushes several terms
    toward zero regardless of speed.
 
-Both effects point the same direction, and for our situation, both apply.
-**Decision: drop $C(\eta,\dot\eta)\dot\eta$.** The rotational equation of
-motion we'll actually implement is the simplified
+Both effects point the same direction, and both apply to this vehicle and
+this flight regime. **I therefore drop $C(\eta,\dot\eta)\dot\eta$**, and the
+rotational equation of motion I carry forward is the simplified
 
 $$M(\eta)\ddot\eta = W(\eta)^T\tau_{body}$$
 
-This is a legitimate, standard, and commonly-used simplification for
-near-hover multicopter flight -- not a shortcut taken out of laziness. It's
-also honestly bounded: it stops being valid for fast, aggressive rotation
-(drone racing, aerobatics) or a deliberately asymmetric airframe, where
-$C(\eta,\dot\eta)\dot\eta$ would no longer be small. If this project ever
-extended toward that kind of flight, Section 3.4's full result is what would
-need to go back in -- it isn't wasted work, it's the documented fallback.
+This is a standard and widely-used simplification for near-hover multicopter
+flight, not a shortcut taken for convenience. It is also bounded, and I want
+the bound on record: it stops being valid for fast, aggressive rotation
+(drone racing, aerobatics) or for a deliberately asymmetric airframe, in
+which case $C(\eta,\dot\eta)\dot\eta$ is no longer small. Should this work
+extend toward that regime, the full result derived in Section 3.4 is what
+goes back in. Deriving it was not wasted effort -- it is the documented
+fallback, and having it in closed form is what makes the decision to omit it
+defensible rather than merely convenient.
 
 ---
 
@@ -597,11 +599,13 @@ window where our model is credible.
 
 ### 7.4 The receding horizon principle
 
-Here is the part that surprises everyone the first time.
+This is the part of MPC that looks wasteful until the reason for it is
+clear.
 
-We compute a full 2-second, 20-step plan. Then we **execute only the first
-step and throw the other nineteen away**. We take a fresh measurement,
-and re-solve the entire problem from scratch, 0.1 seconds later.
+The controller computes a full 2-second, 20-step plan. It then **executes
+only the first step and discards the other nineteen**, takes a fresh
+measurement, and re-solves the entire problem from scratch 0.1 seconds
+later.
 
 ```
    measure x(t)  ->  solve for u_0 ... u_19  ->  apply ONLY u_0  ->  wait dt
@@ -743,12 +747,12 @@ for setting these sensibly rather than by guesswork.
 
 $x_k^{ref}$ is the desired state at each step of the horizon -- and note it is
 indexed by $k$, i.e. it is a *trajectory*, not a fixed point. This matters:
-when tracking a moving reference (our circle), the controller is given not
-just where to be now, but where it should be at every step of the plan. That
-is what allows it to anticipate the curve rather than perpetually chase a
-target that has already moved on.
+when tracking a moving reference (the circle, in my case), the controller is
+given not just where to be now, but where it should be at every step of the
+plan. That is what allows it to anticipate the curve rather than perpetually
+chase a target that has already moved on.
 
-In our code the reference is generated analytically from the circle
+In my implementation the reference is generated analytically from the circle
 parameterization (`reference_trajectory.py`), evaluated at each of the $N+1$
 horizon times.
 
@@ -1099,7 +1103,7 @@ That is `MPC_solver.md`, which picks up exactly here and covers:
 
 ---
 
-## Summary, for when you come back to this later
+## Summary
 
 **The model (Parts 1-6)**
 
