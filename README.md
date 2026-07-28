@@ -9,6 +9,20 @@ prefixed `MPC_` internally). It is a from-scratch optimization-based controller 
 CasADi: it solves a constrained optimal control problem at 10 Hz and streams the result to PX4
 as offboard setpoints.
 
+## Demo
+
+![MPC tracking a circular reference in PX4 SITL](docs/media/mpc_circle_tracking.gif)
+
+RViz2 view looking down on the NED plane. **Red** is the reference circle (5 m radius, 20 s
+per lap); **green** is the drone's actual flown path, accumulated over several laps at 5 m
+altitude in Gazebo SITL.
+
+The visible oscillation of the green trace about the red reference is real tracking error, not
+a rendering artifact — roughly ±0.3 m. Its causes are understood and written up in
+[Known limitations](#known-limitations): the solver re-solves independently each tick with no
+penalty on control-rate continuity, and it consumes raw `VehicleLocalPosition` with no state
+estimator in front of it, so measurement noise is treated as real motion.
+
 ## What it does
 
 The controller tracks a reference trajectory (a circle, by default) by solving this problem

@@ -167,7 +167,11 @@ Then configure once:
 4. Give the two paths different colours (click each display, set **Color**)
 5. Optionally **Add → `/viz/vehicle_pose` → Pose** for a live position marker
 
-The gap between the two paths *is* the tracking error, visually.
+The gap between the two paths *is* the tracking error, visually. It should look like this:
+
+![RViz2 showing actual vs reference path](media/mpc_circle_tracking.gif)
+
+Red is the reference, green is the actual flown path over several laps.
 
 These `/viz/*` topics are published in **ENU** (Z-up), converted from PX4's NED by
 [`frames.py`](../src/px4_mpc_controller/px4_mpc_controller/frames.py). The control loop itself
