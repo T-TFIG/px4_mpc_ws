@@ -24,8 +24,7 @@ class OffboardDemoNode(Node, OffboardArmingMixin):
         self.trajectory_setpoint_pub = self.create_publisher(TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
         self.vehicle_command_pub = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', qos_profile)
 
-        # PX4 v1.17 bumped VehicleStatus's MESSAGE_VERSION, which moves it to a
-        # "_v1"-suffixed topic name -- the plain name has no publisher at all.
+
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status_v1', self._vehicle_status_callback, qos_profile)
 
         # NED hover target: 5 metres above the takeoff point (z is Down, so negative).
