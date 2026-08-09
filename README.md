@@ -135,12 +135,22 @@ Documented honestly rather than hidden, with fuller discussion in `MPC_solver.md
 ### Not implemented
 
 The full nonlinear (12-state rigid-body) MPC is **derived and documented** in
-`MPC_explanation_my_version.md` and `MPC_solver.md`, but deliberately not implemented. It is a
-genuinely larger undertaking — a nonconvex NLP requiring a real-time-capable solver such as
-`acados`, and a different PX4 interface (attitude/body-rate setpoints instead of
+`MPC_explanation_my_version.md` and `MPC_solver.md`, but deliberately not implemented on this
+branch. It is a genuinely larger undertaking — a nonconvex NLP requiring a real-time-capable
+solver such as `acados`, and a different PX4 interface (attitude/body-rate setpoints instead of
 `TrajectorySetpoint`). Stopping at the point-mass model keeps the flight path on a convex QP
 that a solver can be trusted to nail every cycle; `MPC_solver.md` Part 6 is about exactly that
 difference.
+
+## Branches
+
+| Branch | Controller | State |
+|---|---|---|
+| `main` | Point-mass linear MPC — convex QP, solved by IPOPT via CasADi | finished, flies in SITL |
+| `nonlinear-mpc` | 12-state rigid-body nonlinear MPC — nonconvex NLP, SQP | in progress |
+
+`main` is the branch to clone if you want a controller that works. The derivation documents
+live on both branches; only the implementation diverges.
 
 ## Safety
 
