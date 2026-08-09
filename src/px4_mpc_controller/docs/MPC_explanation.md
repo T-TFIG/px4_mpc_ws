@@ -686,7 +686,8 @@ $u_{hover} = \frac{mg}{4}[1,1,1,1]^T$ is derived in `MPC_solver.md` Part 4.3;
 the point is that hovering must cost *nothing*, so only deviation from it is
 penalized.
 
-**(3) Terminal cost.** Discussed in 8.3 -- it handles the horizon's edge.
+**(3) Terminal cost.** Discussed in 8.3-8.5 -- it handles the horizon's edge,
+and it turns out to be a much deeper object than it first looks.
 
 ### 8.2 Why squared errors
 
@@ -719,13 +720,243 @@ The terminal cost $Q_f$ is the fix: it is the proxy for "everything after the
 horizon." A large $Q_f$ tells the optimizer that ending in a bad state is
 expensive even though the consequences lie beyond what it can see.
 
-The principled choice is the **infinite-horizon LQR cost-to-go** -- linearize
-about hover, solve the algebraic Riccati equation for $P$, and set
-$Q_f = P$. Then the finite-horizon cost approximates the infinite-horizon
-one, and (with a terminal constraint set) this is the standard route to a
-*provable* closed-loop stability guarantee. See `MPC_solver.md` Part 4.5.
+That is the usual explanation, and it is the point at which most treatments
+stop -- leaving $Q_f$ looking like a fudge factor you tune until the
+oscillation goes away. It is not. There is an exact answer to "what should
+the terminal cost be," and deriving it is worth the effort, because it also
+explains what MPC *is* relative to the older theory it grew out of.
 
-### 8.4 What the weights actually control
+**The cost we actually want.** Be honest about the objective. What we really
+care about is not the next 2 seconds; it is all of the time from now on:
+
+$$J_\infty = \sum_{k=0}^{\infty}\ell(x_k,u_k), \qquad
+\ell(x,u) = (x-x^{ref})^TQ(x-x^{ref}) + (u-u_{hover})^TR(u-u_{hover})$$
+
+writing $\ell$ for one step's worth of cost -- the *stage cost*. We truncated
+this to $N$ steps for a purely practical reason: an infinite sum has
+infinitely many decision variables in it, and no solver accepts that.
+
+**The split.** Now cut the infinite sum at step $N$ -- not as an
+approximation, just as arithmetic:
+
+$$J_\infty = \underbrace{\sum_{k=0}^{N-1}\ell(x_k,u_k)}_{\text{what we can optimize}}
++ \underbrace{\sum_{k=N}^{\infty}\ell(x_k,u_k)}_{\text{the tail}}$$
+
+The tail depends on exactly two things: the state we arrive in, $x_N$, and
+what we choose to do afterwards. We are free to assume we will act optimally
+afterwards -- we may as well -- so define
+
+$$V^\star(x_N) \;=\; \min_{u_N,u_{N+1},u_{N+2},\dots}\ \sum_{k=N}^{\infty}\ell(x_k,u_k)
+\qquad\text{subject to } x_{k+1}=F(x_k,u_k)$$
+
+This is the **optimal cost-to-go**, or **value function**. It answers a single
+question: *starting from state $x_N$, if I play perfectly from here to
+eternity, what will it cost me?* It is a function of the state alone -- the
+entire infinite future has been minimized out of it.
+
+With that in hand,
+
+$$\min J_\infty \;=\; \min_{u_0,\dots,u_{N-1}}\left[\sum_{k=0}^{N-1}\ell(x_k,u_k) + V^\star(x_N)\right]$$
+
+and this is an **identity, not an approximation**. Nothing has been thrown
+away. The infinite tail has been compressed, with no loss whatsoever, into a
+single term evaluated at a single state.
+
+So the terminal cost is not a hack bolted onto a truncated problem. It is the
+tail, written correctly. If we knew $V^\star$ exactly, an $N$-step problem
+would produce *precisely* the same first move as the infinite-horizon one --
+and that holds for any $N$, including $N=1$.
+
+**And this is the honest description of what MPC is.** The recursion above is
+Bellman's principle of optimality, and if $V^\star$ were available we would
+not need a horizon at all: one-step lookahead plus $V^\star$ *is* the optimal
+controller. The catch is that $V^\star$ is a function over a 12-dimensional
+state space, generally with no closed form, and computing it numerically runs
+straight into the curse of dimensionality. MPC is the bargain you strike when
+you cannot have $V^\star$: replace it with a *finite lookahead* -- which we
+can compute, because it is a finite optimization -- plus a cheap approximation
+of the tail. The longer the lookahead, the less the approximation matters.
+That is the real relationship between $N$ and $Q_f$, and it is why they trade
+against each other.
+
+There is one case where $V^\star$ can be written down exactly, and it is the
+case the terminal cost is built from.
+
+### 8.4 LQR: the one case where the tail collapses into a matrix
+
+Take the special case: **linear** dynamics, **quadratic** stage cost, **no
+constraints**, infinite horizon.
+
+$$x_{k+1}=Ax_k+Bu_k, \qquad \ell(x,u)=x^TQx+u^TRu, \qquad Q\succeq0,\ R\succ0$$
+
+(I have dropped the reference and hover offsets to keep the algebra readable;
+they come back as a shift of coordinates and change nothing structural.)
+
+For this problem the value function is *exactly*
+
+$$V^\star(x) = x^TPx$$
+
+for one constant symmetric matrix $P$. Pause on how strong that statement is.
+An optimization over infinitely many decision variables, of an infinite sum,
+collapses into a quadratic form -- for a 6-state model, 21 numbers. Every
+consequence of every future decision, from now until forever, folded into a
+$6\times6$ matrix. That is the compression the terminal cost is exploiting.
+
+**Deriving $P$ -- work backwards, not forwards.** This is the part that
+usually gets skipped, and it is the part that explains how one matrix can
+"know about" the whole trajectory.
+
+Let $V_j(x)$ be the optimal cost with $j$ steps *remaining*. With none
+remaining there is nothing left to pay, so $V_0(x)=0$. The recursion is
+Bellman's:
+
+$$V_{j+1}(x) = \min_u\Big[\underbrace{x^TQx+u^TRu}_{\text{this step}} + \underbrace{V_j(Ax+Bu)}_{\text{best from wherever it lands me}}\Big]$$
+
+Now the induction. Suppose $V_j(x)=x^TP_jx$. Substituting,
+
+$$V_{j+1}(x) = \min_u\Big[x^TQx+u^TRu+(Ax+Bu)^TP_j(Ax+Bu)\Big]$$
+
+The bracket is quadratic in $u$ with Hessian $2(R+B^TP_jB)\succ0$, so it is
+strictly convex and has a unique minimum where the gradient vanishes:
+
+$$2Ru + 2B^TP_j(Ax+Bu) = 0
+\quad\Longrightarrow\quad (R+B^TP_jB)\,u = -B^TP_jAx$$
+
+$$\boxed{\,u^\star = -K_jx, \qquad K_j = (R+B^TP_jB)^{-1}B^TP_jA\,}$$
+
+Note what just fell out unbidden: **the optimal action is a linear function of
+the current state.** Nobody assumed a feedback structure, or a controller
+form, or gains. It is a consequence of the algebra.
+
+Substituting $u^\star=-Kx$ back in (writing $P$ for $P_j$, $S=R+B^TPB$):
+
+$$V_{j+1}(x)=x^T\Big[Q + K^TRK + (A-BK)^TP(A-BK)\Big]x$$
+
+Expand the $(A-BK)$ product and gather the two terms that are quadratic in
+$K$:
+
+$$Q + A^TPA - A^TPBK - K^TB^TPA + K^T(R+B^TPB)K$$
+
+and the last term is $K^TSK = K^TS\,S^{-1}B^TPA = K^TB^TPA$, which cancels the
+third term exactly. What survives is
+
+$$P_{j+1} = Q + A^TP_jA - A^TP_jB\,(R+B^TP_jB)^{-1}B^TP_jA$$
+
+the **Riccati difference equation**. Quadratic in, quadratic out: the
+induction closes, and starting from $P_0=0$ every $V_j$ is a quadratic form.
+
+**This is the answer to "how does one matrix capture the whole trajectory."**
+The recursion runs **backwards in time**, from the end of the horizon toward
+the present. It never simulates a trajectory forward and adds up its cost.
+Each backward application of the Riccati map folds *one more step of the
+future* into $P$: $P_1$ knows about one step ahead, $P_2$ about two, $P_{100}$
+about a hundred. The matrix is an accumulator for consequences, filled in from
+the far end.
+
+**The fixed point.** Iterate that map and, under mild conditions -- $(A,B)$
+stabilizable and $(Q^{1/2},A)$ detectable, i.e. you can control what matters
+and you are penalizing everything that could go unstable -- $P_j$ converges to
+a unique $P\succeq0$ satisfying
+
+$$P = Q + A^TPA - A^TPB\,(R+B^TPB)^{-1}B^TPA$$
+
+the **discrete algebraic Riccati equation** (DARE). It is the same equation
+with the indices dropped, which is exactly what a fixed point is: *adding one
+more step of future changes nothing*. The fold has absorbed the entire
+infinite tail. That fixed point is $V^\star$, and it is why an infinite
+horizon can be represented by a finite object at all.
+
+In practice you do not iterate it by hand -- `scipy.linalg.solve_discrete_are(A, B, Q, R)`
+returns $P$ in microseconds, once, offline.
+
+**Two readings of the same matrix.** $P$ does double duty, and it is worth
+seeing that this is not a coincidence:
+
+- $x^TPx$ is **what the rest of time will cost** starting from $x$ -- the
+  value.
+- $K=(R+B^TPB)^{-1}B^TPA$ gives $u=-Kx$, **what to actually do** -- the
+  policy. This is the LQR controller.
+
+They are the same object viewed twice: once as the minimum, once as the
+argmin. Computing the terminal cost therefore hands you the terminal
+*controller* for free, which is what makes the stability argument below work.
+
+### 8.5 What $Q_f=P$ buys, and what I actually implemented
+
+**Exactness.** If the dynamics are linear, the cost quadratic, and no
+constraint is ever active beyond step $N$, then setting $Q_f=P$ makes the
+$N$-step MPC produce *exactly* the infinite-horizon optimal input. Truncating
+the horizon costs nothing at all. When constraints *do* bind past step $N$,
+$P$ is optimistic -- LQR ignores constraints, so it under-estimates the true
+tail cost -- and MPC becomes an approximation again, but a principled one with
+a known direction of error.
+
+**Stability.** This is where the fixed-point property earns its keep, so it is
+worth doing rather than asserting. Let $V_N(x)$ be the optimal $N$-step MPC
+cost starting from $x$.
+
+At time $t$ we solve and obtain the optimal plan $u_0^\star,\dots,u_{N-1}^\star$.
+We apply $u_0^\star$ and arrive at $x_{t+1}$. Now construct a *candidate* plan
+for time $t+1$ -- not necessarily the optimal one, just a feasible one: drop
+the move we already made, shift everything forward one slot, and fill the
+newly empty last slot with the LQR action $u=-Kx_N$. Its cost is
+
+$$V_N(x_t) - \ell(x_t,u_0^\star) + \underbrace{\Big[\ell(x_N,-Kx_N) + x_{N+1}^TPx_{N+1} - x_N^TPx_N\Big]}_{\text{the newly appended step, minus the terminal term it replaced}}$$
+
+That bracket is
+
+$$x_N^T\Big[Q + K^TRK + (A-BK)^TP(A-BK) - P\Big]x_N$$
+
+and the matrix inside is **identically zero** -- it is the Riccati equation,
+rearranged. So the candidate costs exactly $V_N(x_t)-\ell(x_t,u_0^\star)$, and
+the true optimum at $t+1$ can only be cheaper than any feasible candidate:
+
+$$V_N(x_{t+1}) \;\le\; V_N(x_t) - \ell(x_t,u_0^\star)$$
+
+$V_N$ is therefore a **Lyapunov function**: it is non-negative, and it drops
+every single step by at least the stage cost just incurred. It cannot drop
+forever, so the stage cost must go to zero, so the state must go to the
+reference. That is the closed-loop stability guarantee -- and notice it hangs
+*entirely* on the bracket vanishing. With any $Q_f$ that is not the Riccati
+fixed point, that term is nonzero, the telescoping fails, and the argument
+gives nothing.
+
+**What I actually implemented.** In `mpc_solver.py` the terminal cost is one
+line:
+
+```python
+cost += weight_position * ca.sumsqr(X[0:3, self.n] - p_ref[:, self.n])
+```
+
+That is $Q_f$ = the *stage* position weight, applied to position only, with no
+velocity term at all. Two consequences I should state plainly:
+
+1. **No stability guarantee**, for exactly the reason above.
+2. **The edge-of-horizon pathology is only partly suppressed.** Nothing at
+   step $N$ penalizes arriving with the wrong velocity -- the classic failure
+   this section opened with is, formally, still free. It does not bite in
+   practice because the velocity reference *is* penalized at all $N$ earlier
+   stages and the 2-second horizon is long relative to how fast the circle
+   evolves. But that is a property of the tuning, not of the formulation.
+
+For this point-mass model, doing it properly would be genuinely cheap. $A$ and
+$B$ are known exactly and are constant -- the zero-order-hold double
+integrator -- so $P$ is a single `solve_discrete_are` call in the solver's
+constructor, and $Q_f=P$ costs nothing extra at runtime: the same number of
+terms in the cost, just with better numbers in them. It is on the list. For
+the full nonlinear model you linearize about hover first, which is what
+`MPC_solver.md` Part 4.5 describes.
+
+**Why not just use a longer horizon instead?** You can, and it works -- as $N$
+grows, whatever happens past the horizon is further away and matters less, so
+a sloppy $Q_f$ hurts less. But the two are paid for very differently.
+Horizon length is paid **every solve**: $N$ more blocks of decision variables
+and $N$ more blocks of constraints, every 100 ms, forever. $P$ is paid
+**once, offline**, and is a $6\times6$ matrix. Buying yourself an infinite
+horizon with a Riccati solve instead of a longer $N$ is the best
+value-for-money trade in the entire formulation.
+
+### 8.6 What the weights actually control
 
 Only the **ratios** of $Q$, $R$, $Q_f$ matter -- scaling all three by the
 same factor leaves the minimizer unchanged.
@@ -743,7 +974,7 @@ comparable -- 1 m of position error and 1 radian (57°!) of attitude error are
 wildly different in severity. `MPC_solver.md` Part 4.4 covers Bryson's rule
 for setting these sensibly rather than by guesswork.
 
-### 8.5 Where the reference comes from
+### 8.7 Where the reference comes from
 
 $x_k^{ref}$ is the desired state at each step of the horizon -- and note it is
 indexed by $k$, i.e. it is a *trajectory*, not a fixed point. This matters:
@@ -1138,6 +1369,16 @@ That is `MPC_solver.md`, which picks up exactly here and covers:
 - The **cost** trades tracking against control effort, with a terminal cost
   handling the edge-of-horizon problem; the **constraints** encode physics
   and actuator/state limits (Parts 8-9).
+- The terminal cost is not a fudge factor: splitting the infinite-horizon cost
+  at step $N$ shows it should be the **optimal cost-to-go** $V^\star(x_N)$,
+  which makes the truncation *exact* rather than approximate (8.3).
+- $V^\star$ is computable in closed form in exactly one case -- linear
+  dynamics, quadratic cost, no constraints -- where it is $x^TPx$ and $P$ is
+  the fixed point of the **Riccati** recursion, which folds the infinite
+  future into a matrix by propagating cost *backwards* in time (8.4).
+- Setting $Q_f=P$ makes the MPC cost a **Lyapunov function**, which is the
+  standard route to a stability proof. My implementation does not do this,
+  and 8.5 says exactly what that costs.
 
 **Optimality (Parts 11-12)**
 
