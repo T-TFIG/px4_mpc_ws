@@ -93,10 +93,18 @@ src/
 | Document | Contents |
 |---|---|
 | [`docs/RUNNING.md`](docs/RUNNING.md) | Build, run, verify, tune, troubleshoot |
-| [`MPC_explanation.md`](src/px4_mpc_controller/docs/MPC_explanation.md) | Full Euler-Lagrange derivation of the quadrotor dynamics, then MPC from first principles: prediction horizon, receding horizon, cost and constraint design, Lagrange multipliers, KKT conditions |
+| [`MPC_explanation_my_version.md`](src/px4_mpc_controller/docs/MPC_explanation_my_version.md) | Full Newtonian derivation of the quadrotor dynamics, then MPC from first principles in six parts: dynamics, RK4 discretization, cost, constraints, the SQP solver, and the receding horizon loop |
 | [`MPC_solver.md`](src/px4_mpc_controller/docs/MPC_solver.md) | How the optimization is actually solved: RK4, multiple shooting, Newton-type methods, SQP vs interior-point, automatic differentiation, real-time iteration |
+| [`optimization_visualized.md`](src/px4_mpc_controller/docs/optimization_visualized.md) | Lagrange multipliers, KKT, gradient descent, Newton and SQP, drawn from runnable scripts |
+| [`writing_the_solver.md`](src/px4_mpc_controller/docs/writing_the_solver.md) | Build order for writing the QP/SQP solver by hand, with a test per stage |
 
-Thai translations of both derivation documents are available as `*_th.md`.
+Four side documents carry the supporting detail for the derivation, so the
+main line stays followable: `euler_angle_rates.md` (deriving and inverting
+$E$, gimbal lock), `why_rk4.md` (RK4 vs Euler, measured), `why_quadratic_cost.md`
+(why squared, and choosing $Q$ and $R$), and `sqp_details.md` (which Hessian,
+factorizing the KKT system, finding the active set).
+
+A Thai translation of the solver document is available as `MPC_solver_th.md`.
 
 ## Status
 
@@ -127,10 +135,12 @@ Documented honestly rather than hidden, with fuller discussion in `MPC_solver.md
 ### Not implemented
 
 The full nonlinear (12-state rigid-body) MPC is **derived and documented** in
-`MPC_explanation.md` and `MPC_solver.md`, but deliberately not implemented. It is a genuinely
-larger undertaking — a nonconvex NLP requiring a real-time-capable solver such as `acados`, and
-a different PX4 interface (attitude/body-rate setpoints instead of `TrajectorySetpoint`). The
-reasoning behind stopping at the point-mass model is recorded in `MPC_explanation.md`.
+`MPC_explanation_my_version.md` and `MPC_solver.md`, but deliberately not implemented. It is a
+genuinely larger undertaking — a nonconvex NLP requiring a real-time-capable solver such as
+`acados`, and a different PX4 interface (attitude/body-rate setpoints instead of
+`TrajectorySetpoint`). Stopping at the point-mass model keeps the flight path on a convex QP
+that a solver can be trusted to nail every cycle; `MPC_solver.md` Part 6 is about exactly that
+difference.
 
 ## Safety
 

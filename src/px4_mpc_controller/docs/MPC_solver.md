@@ -2,12 +2,12 @@
 
 ## What this document covers
 
-`MPC_explanation.md` derives the quadrotor's equations of motion from first
-principles and ends, in its Part 7, by *stating* the nonlinear MPC problem we
-want to solve. It stops there deliberately -- writing down an optimization
-problem and actually solving it are two different subjects.
+`MPC_explanation_my_version.md` derives the quadrotor's equations of motion
+from first principles and states the nonlinear MPC problem we want to solve,
+then sketches the SQP skeleton that solves it (its Part V) and the loop that
+runs it (its Part VI).
 
-This document is the second half. It picks up exactly at that point and
+This document is the second half. It picks up where that skeleton stops and
 answers: **given that nonlinear model, how does a solver actually turn it
 into numbers, 10 or 50 times a second?**
 
@@ -16,12 +16,11 @@ formula. Every equation is derived from the one before it, with an
 explanation of where it came from and why that step is necessary.
 
 **Important scope note.** This document is about the **full nonlinear model**
-derived in `MPC_explanation.md` -- the 12-state rigid-body quadrotor. It is
-*not* a description of what `mpc_solver.py` currently implements. The code
-today runs a simplified point-mass model, which (as `MPC_explanation.md`
-Part 5 and the closing sections explain) is a deliberate simplification. This
-document describes the machinery needed for the *real* model -- the thing we
-would build next.
+-- the 12-state rigid-body quadrotor. It is *not* a description of what
+`mpc_solver.py` currently implements. The code today runs a simplified
+point-mass model, and that is a deliberate simplification, not an oversight.
+This document describes the machinery needed for the *real* model -- the
+thing we would build next.
 
 Where the two differ matters enormously, and Part 6 is entirely about that
 difference: the point-mass problem is a convex QP with strong guarantees, and
@@ -33,8 +32,9 @@ the nonlinear problem is emphatically not.
 
 ### 1.1 Recap of the model
 
-From `MPC_explanation.md` Part 6.1, with the Coriolis term dropped per its
-Part 5, the state and dynamics are:
+The state and dynamics, in the Euler-Lagrange form this document works in --
+generalized coordinates $(\xi,\eta)$ and their rates, with the Coriolis term
+$C(\eta,\dot\eta)$ dropped as a declared simplification:
 
 $$x = \begin{bmatrix}\xi\\\eta\\\dot\xi\\\dot\eta\end{bmatrix}\in\mathbb{R}^{12},
 \qquad
@@ -319,9 +319,9 @@ All four equal, summing to $mg$:
 $$\boxed{\;u_{hover} = \frac{mg}{4}\,[1,1,1,1]^T\;}$$
 
 So the correct term is $(u_k - u_{hover})^TR(u_k-u_{hover})$: hovering is
-free, and only *deviation* from hover is penalized. (This is the error
-corrected in `MPC_explanation.md` Part 7, which originally had an asymmetric
-$(u_k-u_{hover})^TRu_k$.)
+free, and only *deviation* from hover is penalized. (An asymmetric
+$(u_k-u_{hover})^TRu_k$ is the easy version of this mistake to write down;
+`MPC_explanation_my_version.md` Part III Step 2 states the symmetric form.)
 
 ### 4.4 Subtlety 3: the states have wildly different units
 
@@ -396,8 +396,8 @@ $$0 \;\le\; f_{i,k} \;\le\; f_{max}, \qquad i = 1,\dots,4$$
 The lower bound is genuinely physical, not conservatism: a fixed-pitch rotor
 can push but **cannot pull**. The upper bound is the motor's maximum.
 
-This is precisely why `MPC_explanation.md` Part 6.2 argues for formulating in
-terms of $f_i$ rather than $(T, \tau_{body})$. In $(T,\tau)$ coordinates,
+This is precisely the argument for formulating in terms of the individual
+rotor forces $f_i$ rather than $(T, \tau_{body})$. In $(T,\tau)$ coordinates,
 "each individual rotor is within its limits" maps to an awkward polytope; in
 $f_i$ coordinates it is four simple bounds. Same physics, far better
 conditioned.
@@ -413,8 +413,9 @@ Two independent reasons to include this, and they are worth separating:
 1. **Physical.** Beyond roughly 60° of tilt, the vertical thrust component
    $T\cos\phi\cos\theta$ can no longer support the vehicle's weight and it
    loses altitude regardless of throttle.
-2. **Mathematical.** Recall from `MPC_explanation.md` Part 4 that $W(\eta)$
-   becomes singular at $\theta = \pm 90°$ -- gimbal lock -- which would make
+2. **Mathematical.** $W(\eta)$ becomes singular at $\theta = \pm 90°$ --
+   gimbal lock, worked out in
+   [`euler_angle_rates.md`](euler_angle_rates.md#gimbal-lock) -- which would make
    $M(\eta)^{-1}$ blow up inside our own dynamics function. Constraining tilt
    to, say, $\pm45°$ keeps the optimizer's iterates safely away from a region
    where our chosen *representation* breaks down, independent of whether the
@@ -707,8 +708,8 @@ pushed back inside, discarding much of the benefit. SQP has no such
 restriction and reuses the previous active set directly.
 
 For an MPC loop, where consecutive problems are nearly identical, that
-advantage is decisive. This is the concrete reason `MPC_explanation.md`
-flagged `acados` over IPOPT for the real-dynamics controller.
+advantage is decisive. This is the concrete reason to reach for `acados`
+rather than IPOPT for the real-dynamics controller.
 
 ---
 
@@ -811,8 +812,9 @@ model expression is reusable as-is, and only the solver setup changes.
 
 A pragmatic ordering, lowest-risk first:
 
-1. **Write $f(x,u)$ in CasADi** exactly as derived in `MPC_explanation.md`
-   Part 6.1, with $\tau_{body} = \Gamma u$ from the mixer. Verify it in
+1. **Write $f(x,u)$ in CasADi** exactly as derived in
+   `MPC_explanation_my_version.md` Part I Step 7, with
+   $\tau_{body} = \Gamma u$ from the mixer. Verify it in
    isolation before any optimization: check that $u = u_{hover}$ at
    $\eta = 0$ produces $\dot x \approx 0$, and that a small roll torque
    produces roll acceleration of the expected sign and magnitude. Dynamics
@@ -831,8 +833,8 @@ A pragmatic ordering, lowest-risk first:
    failure.
 5. **Migrate to `acados` with RTI** once the formulation is verified correct.
    Optimizing before the model is right optimizes the wrong thing.
-6. **Change the PX4 interface last.** Recall from `MPC_explanation.md` Part 7
-   that this controller commands attitude or body rates, not
+6. **Change the PX4 interface last.** This controller commands attitude or
+   body rates, not
    `TrajectorySetpoint` -- so `OffboardControlMode.body_rate` (or
    `.attitude`) with `VehicleRatesSetpoint`/`VehicleAttitudeSetpoint`
    replaces the current path. Do this only once the solver is trustworthy;
@@ -846,7 +848,7 @@ control loop.** Steps 1-4 are all offline for exactly that reason.
 
 ## Summary
 
-- The model from `MPC_explanation.md` is nonlinear, coupled, and
+- The model from `MPC_explanation_my_version.md` is nonlinear, coupled, and
   underactuated. Those three properties drive everything here (Part 1).
 - **Discretization must be numerical** -- no closed form exists. RK4 gives
   $O(\Delta t^4)$ global error for 4 dynamics evaluations per step; Euler's

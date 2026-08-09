@@ -3,7 +3,7 @@
 How to build, launch, and verify the point-mass MPC controller against PX4 SITL.
 
 For the theory behind what the controller is doing, see
-[`src/px4_mpc_controller/docs/MPC_explanation.md`](../src/px4_mpc_controller/docs/MPC_explanation.md)
+[`src/px4_mpc_controller/docs/MPC_explanation_my_version.md`](../src/px4_mpc_controller/docs/MPC_explanation_my_version.md)
 (dynamics and control) and
 [`MPC_solver.md`](../src/px4_mpc_controller/docs/MPC_solver.md) (numerical methods).
 

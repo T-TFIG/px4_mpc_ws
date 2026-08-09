@@ -4,7 +4,8 @@
 Run with: python3 derive_dynamics.py
 (requires sympy: pip install sympy)
 
-Produces the exact results documented in ../MPC_explanation.md, plus a
+Produces the Euler-Lagrange form of the model used in ../MPC_solver.md
+Part 1 -- M(eta), C(eta, etadot), W(eta) -- plus a
 skew-symmetry check (Mdot - 2C must be skew-symmetric) as a correctness
 sanity check on C.
 """
