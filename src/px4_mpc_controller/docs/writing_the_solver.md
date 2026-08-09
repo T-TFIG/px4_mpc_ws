@@ -3,6 +3,11 @@
 A build order for `solvers/qp.py` and `solvers/sqp.py`, with the algebra you
 need at each step and a test that has to pass before you move on.
 
+> **Where the code is.** The `solvers/` package lives on the `nonlinear-mpc`
+> branch. `main` runs the point-mass controller through CasADi and IPOPT and
+> does not need it. Read this document on either branch; check out
+> `nonlinear-mpc` to see the finished result.
+
 The theory is in
 [`MPC_explanation_my_version.md`](MPC_explanation_my_version.md) Part V (KKT,
 multipliers, the SQP subproblem), [`sqp_details.md`](sqp_details.md) (which

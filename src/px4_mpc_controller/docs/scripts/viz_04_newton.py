@@ -30,7 +30,7 @@ Three things the panels make visible:
       visual signature. Note the safeguard: H can be indefinite far from the
       minimum, where the "minimum of the parabola" is a saddle or a maximum
       and the step is garbage. We add tau*I to fix that, which is the same
-      trick as `hessian_regularization` in solvers/sqp.py.
+      trick as `hessian_regularization` in solvers/sqp.py (nonlinear-mpc branch).
 
 Run:  python3 viz_04_newton.py [--outdir DIR]
 """
@@ -144,7 +144,8 @@ def newton(f, grad, hess, z0, n_steps, tol=1e-12):
     If the Hessian is not positive definite the model is a saddle or an
     upside-down bowl -- it has no minimum to jump to -- so we shift it to
     H + tau*I until it does. This is the same idea as `hessian_regularization`
-    in solvers/sqp.py, and without it the method can step uphill.
+    in solvers/sqp.py (nonlinear-mpc branch), and without it the method can
+    step uphill.
     """
     z = np.array(z0, dtype=float)
     path = [z.copy()]

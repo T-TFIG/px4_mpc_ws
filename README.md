@@ -150,7 +150,9 @@ difference.
 | `nonlinear-mpc` | 12-state rigid-body nonlinear MPC — nonconvex NLP, SQP | in progress |
 
 `main` is the branch to clone if you want a controller that works. The derivation documents
-live on both branches; only the implementation diverges.
+live on both branches; only the implementation diverges. The hand-written QP/SQP solvers
+(`px4_mpc_controller/solvers/`) are on `nonlinear-mpc` only — `main` has no use for them,
+since a point-mass QP goes to IPOPT directly.
 
 ## Safety
 

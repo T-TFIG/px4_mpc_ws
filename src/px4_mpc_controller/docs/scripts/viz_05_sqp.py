@@ -20,7 +20,8 @@ like it locally, takes the step, and repeats. One iteration is four moves:
      infeasible iterate back towards the circle.
 
   3. SOLVE THE QP for the step p. With one equality constraint this is a 3x3
-     KKT system -- exactly the saddle-point system of solvers/qp.py:
+     KKT system -- exactly the saddle-point system of solvers/qp.py on the
+     nonlinear-mpc branch:
 
         [ B_k      grad c ] [ p       ]   [ -grad f(z_k) ]
         [ grad c^T   0    ] [ lambda+ ] = [ -c(z_k)      ]

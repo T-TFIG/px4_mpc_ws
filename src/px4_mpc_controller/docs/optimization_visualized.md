@@ -293,7 +293,7 @@ $\tau=|\lambda_{\min}|+10^{-3}$ whenever $\lambda_{\min}\le0$, and backtracks
 with an Armijo condition on top.
 
 This is the same problem, and the same fix, as `hessian_regularization` in
-[`../px4_mpc_controller/solvers/sqp.py`](../px4_mpc_controller/solvers/sqp.py).
+`solvers/sqp.py` (on the `nonlinear-mpc` branch).
 
 ---
 
@@ -342,8 +342,8 @@ system:
 $$\begin{bmatrix}B_k & \nabla c\\ \nabla c^T & 0\end{bmatrix}\begin{bmatrix}p\\ \lambda_{k+1}\end{bmatrix}=\begin{bmatrix}-\nabla f(z_k)\\ -c(z_k)\end{bmatrix}$$
 
 This is exactly the saddle-point system that `_solve_augmented` in
-[`solvers/qp.py`](../px4_mpc_controller/solvers/qp.py) is written to solve —
-here at size 3 instead of 312. Note the payoff: **the QP's own multiplier
+`solvers/qp.py` (on the `nonlinear-mpc` branch) is written to solve — here at
+size 3 instead of 312. Note the payoff: **the QP's own multiplier
 becomes the next $\lambda$ for free**, which is where the outer loop gets its
 multiplier estimates.
 
@@ -403,9 +403,13 @@ in the table mixes both $\|\nabla f+\lambda\nabla c\|$ and $|c|$.
 | KKT four conditions | `MPC_explanation_my_version.md` Part V Step 7; `qp.kkt_residuals` |
 | Complementary slackness is combinatorial | `writing_the_solver.md` Stage 4 |
 | Newton step $Hp=-\nabla f$ | `MPC_solver.md` Part 8 |
-| Hessian regularization | `solvers/sqp.py`, `hessian_regularization` |
-| The $3\times3$ KKT system | `solvers/qp.py`, `_solve_augmented` (at size 312) |
-| SQP outer loop | `solvers/sqp.py`, `solve_sqp` |
+| Hessian regularization | `solvers/sqp.py`, `hessian_regularization` † |
+| The $3\times3$ KKT system | `solvers/qp.py`, `_solve_augmented` (at size 312) † |
+| SQP outer loop | `solvers/sqp.py`, `solve_sqp` † |
+
+† The `solvers/` package lives on the `nonlinear-mpc` branch, not here. It is
+the hand-written QP/SQP implementation for the 12-state controller, which
+`main` does not run.
 
 The 2D examples here are 2 and 4 variables. The MPC in `mpc_solver.py` is 186
 variables with 126 equality and 240 inequality constraints. The geometry is

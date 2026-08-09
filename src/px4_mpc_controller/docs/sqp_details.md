@@ -129,8 +129,8 @@ is the condition for $d$ to be a *minimizer* rather than a saddle -- $B$ must
 be positive definite on the null space of $A$. When it is not, the fix is
 regularization: solve with $B + \tau I$ for the smallest $\tau$ that
 restores it. This is the `hessian_regularization` parameter in
-`solvers/sqp.py`, and the same safeguard as the eigenvalue shift in
-`viz_04_newton.py`.
+`solvers/sqp.py` (on the `nonlinear-mpc` branch), and the same safeguard as
+the eigenvalue shift in `viz_04_newton.py`.
 
 ---
 
@@ -207,7 +207,8 @@ controller that is usually fast and occasionally slow is worse than one that
 is always merely fast, because the deadline is hard and a missed cycle is a
 failsafe.
 
-`solvers/qp.py` is built around the interior-point formulation for this
+`solvers/qp.py`, on the `nonlinear-mpc` branch, is built around the
+interior-point formulation for this
 reason -- the $s \circ \mu = \tau$ relaxation, the fraction-to-boundary rule,
 and the $\Sigma = \mu/s$ barrier stiffness are all in its docstring, and
 [`writing_the_solver.md`](writing_the_solver.md) stages 3--4 give the full
